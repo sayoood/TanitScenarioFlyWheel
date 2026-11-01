@@ -57,8 +57,11 @@ class Store:
         return json.loads(p.read_text())
 
     def save(self, run: dict, event: bool = True):
-        with self.lock:
-            (self.path(run["id"]) / "run.json").write_text(json.dumps(run, indent=1, default=str))
+        p = self.path(run["id"]) / "run.json"
+        with self.lock:  # atomic replace: readers never see a half-written file
+            tmp = p.with_suffix(".tmp")
+            tmp.write_text(json.dumps(run, indent=1, default=str))
+            os.replace(tmp, p)
         if event:
             self.publish({"type": "run", "run_id": run["id"], "run": summary(run)})
 

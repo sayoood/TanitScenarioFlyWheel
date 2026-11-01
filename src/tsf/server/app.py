@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
@@ -41,14 +42,18 @@ class Hub:
 
 hub = Hub()
 store = Store(publish=hub.publish)
-app = FastAPI(title="Tanit Scenario Flywheel", version="0.1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-@app.on_event("startup")
-async def _startup():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     hub.loop = asyncio.get_running_loop()
-    asyncio.create_task(_health_ticker())
+    ticker = asyncio.create_task(_health_ticker())
+    yield
+    ticker.cancel()
+
+
+app = FastAPI(title="Tanit Scenario Flywheel", version="0.1.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
 # ----------------------------------------------------------------------------- health
