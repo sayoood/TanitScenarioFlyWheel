@@ -21,7 +21,9 @@ ROOT = Path(__file__).resolve().parents[3]
 RUNS = Path(os.environ.get("TSF_RUNS", ROOT / "runs" / "api"))
 EXAMPLES = ROOT / "examples"
 KIND = {".xodr": "xodr", ".xosc": "xosc", ".osc": "osc2", ".mp4": "video", ".png": "image", ".json": "json"}
-STAGES = {"uc1": ["analyse", "propose", "verify", "repair", "document", "simulate", "augment", "closed_loop"]}
+_LIFT = ["analyse", "propose", "verify", "repair", "document"]
+_DOWN = ["simulate", "augment", "closed_loop"]
+STAGES = {"uc1": _LIFT + _DOWN, "uc3": ["brief"] + _LIFT + ["twin"] + _DOWN}
 
 
 def now() -> str:
@@ -124,7 +126,10 @@ class Ctx:
         self._t: dict[str, float] = {}
 
     def stage(self, name: str, status: str, detail: str = ""):
-        st = next(s for s in self.run["stages"] if s["name"] == name)
+        st = next((s for s in self.run["stages"] if s["name"] == name), None)
+        if st is None:  # optional stage not declared up front (e.g. replay_negative)
+            st = {"name": name, "status": "pending"}
+            self.run["stages"].append(st)
         if status == "running":
             self._t[name] = time.perf_counter()
             st["started"] = now()
@@ -176,18 +181,11 @@ def uc1(ctx: Ctx):
     """Text (or a given TSIR) -> verified scenario package -> simulation -> augmentation -> closed loop."""
     from tsf.verify import ladder
 
-    run, inp, opt, wd = ctx.run, ctx.run["input"], ctx.run["options"] or {}, ctx.dir
+    run, inp, wd = ctx.run, ctx.run["input"], ctx.dir
     if inp.get("query") and not (inp.get("tsir") or inp.get("example")):
         from tsf.agents.lifter import Lifter
         res = Lifter().lift(inp["query"], wd / "lift", on_stage=ctx.stage)
-        run["attempts"] = [_attempt(i, a.report, a.seconds) for i, a in enumerate(res.attempts)]
-        final = res.final
-        tsir, rep = final.tsir, final.report
-        run["package_valid"], run["package_errors"] = res.package_valid, res.package_errors
-        run["llm"] = {"calls": res.llm_stats.get("calls", 0), "tok_per_s": res.llm_stats.get("tok_per_s", 0.0)}
-        run["kpis"] = res.kpis()
-        shutil.copy2(wd / "lift" / "package.json", wd / "package.json")
-        _publish_files(wd / "lift" / f"attempt{len(res.attempts) - 1}", wd)
+        tsir, rep = _adopt_lift(ctx, res, wd / "lift")
     else:
         for s in ("analyse", "propose", "repair", "document"):
             ctx.stage(s, "skipped", "TSIR given")
@@ -199,6 +197,24 @@ def uc1(ctx: Ctx):
         ctx.stage("verify", "ok" if rep.passed else "failed", rep.diagnostics()[:300])
         run["kpis"] = {"first_pass_valid": rep.passed, "time_to_valid_s": round(time.perf_counter() - t0, 2)}
         _publish_files(wd / "attempt0", wd)
+    downstream(ctx, tsir, rep)
+
+
+def _adopt_lift(ctx: Ctx, res, lift_dir: Path):
+    """Record a LiftResult (attempts, package, LLM stats, KPIs) on the run; returns the final (tsir, report)."""
+    run = ctx.run
+    run["attempts"] = [_attempt(i, a.report, a.seconds) for i, a in enumerate(res.attempts)]
+    run["package_valid"], run["package_errors"] = res.package_valid, res.package_errors
+    run["llm"] = {"calls": res.llm_stats.get("calls", 0), "tok_per_s": res.llm_stats.get("tok_per_s", 0.0)}
+    run["kpis"] = res.kpis()
+    shutil.copy2(lift_dir / "package.json", ctx.dir / "package.json")
+    _publish_files(lift_dir / f"attempt{len(res.attempts) - 1}", ctx.dir)
+    return res.final.tsir, res.final.report
+
+
+def downstream(ctx: Ctx, tsir: dict, rep):
+    """Shared by all use cases once a TSIR passed the ladder: simulate (+scene, video) -> augment -> closed loop."""
+    run, opt, wd = ctx.run, ctx.run["options"] or {}, ctx.dir
     (wd / "tsir.json").write_text(json.dumps(tsir, indent=1))
     (wd / "report.json").write_text(json.dumps(rep.to_dict(), indent=1))
     run["score"] = rep.score()
@@ -252,4 +268,17 @@ def uc1(ctx: Ctx):
     ctx.save()
 
 
-PIPELINES = {"uc1": uc1}
+def uc3(ctx: Ctx):
+    """NEGATIVE incident -> brief -> lifted COUNTERFACTUAL_POSITIVE twin (incident v2) -> UC1 downstream."""
+    from tsf.agents.counterfactual import Counterfactual
+    out = Counterfactual().run(ctx.run["input"]["incident_id"], ctx.dir / "uc3", on_stage=ctx.stage,
+                               replay_negative=bool((ctx.run["options"] or {}).get("replay_negative")))
+    tsir, rep = _adopt_lift(ctx, out["positive"], ctx.dir / "uc3" / "positive")
+    shutil.copy2(ctx.dir / "uc3" / "incident_cf_positive.json", ctx.dir / "incident_cf_positive.json")
+    shutil.copy2(ctx.dir / "uc3" / "brief.json", ctx.dir / "incident_brief.json")
+    ctx.run["kpis"].update(twin_valid=out["twin_valid"])
+    ctx.run["twin_errors"] = out["twin_errors"]
+    downstream(ctx, tsir, rep)
+
+
+PIPELINES = {"uc1": uc1, "uc3": uc3}

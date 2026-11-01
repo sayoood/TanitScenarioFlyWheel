@@ -180,6 +180,13 @@ def examples():
             for p in sorted((ROOT / "examples").glob("*.json"))]
 
 
+@app.get("/api/incidents")
+def incidents():
+    """NEGATIVE real-world incidents available for UC3 (IMDAD v2 export on thor3; titles only)."""
+    from tsf.agents.counterfactual import INCIDENTS, list_incidents
+    return list_incidents() if INCIDENTS.exists() else []
+
+
 # ----------------------------------------------------------------------------- events
 @app.websocket("/api/events")
 async def events(ws: WebSocket):
