@@ -136,13 +136,14 @@ def closed_loop(rid: str) -> dict | None:
 
 
 def ablation() -> list[dict]:
-    """One panel per condition for every (query, repetition) where the agent is correct and one-shot is not."""
+    """One panel per condition for every (query, repetition) where the iterative condition is correct and one-shot
+    is not; only the adopted policy (G, one-shot + repair) and the Harness2-evolved agent (E)."""
     from tsf.agents.ablation import QUERIES
     rows = [json.loads(ln) for ln in (ABLATION / "rows.jsonl").read_text().splitlines() if ln.strip()]
     by = {(r["cond"], r["q"], r["rep"]): r for r in rows}
     out = []
     for (cond, q, rep), r in sorted(by.items()):
-        if cond not in ("D", "E", "F", "G") or not r["correct"]:
+        if cond not in ("E", "G") or not r["correct"]:
             continue
         base = by.get(("A", q, rep))
         if base is None or base["correct"]:
