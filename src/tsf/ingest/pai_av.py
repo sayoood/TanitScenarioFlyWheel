@@ -342,7 +342,7 @@ def fidelity(sim, log, gt: dict) -> dict:
 
 
 # ----------------------------------------------------------------------------- consistency + parameters
-def deconflict(tsir: dict, workdir, max_iter: int = 4):
+def deconflict(tsir: dict, workdir, max_iter: int = 6, protect: tuple[str, ...] = ()):
     """Lifting errors show up as collisions in re-simulation: pull the offending actor's lateral offset back
     toward its lane centre, else drop the actor (recorded in meta). Returns (tsir, report, dropped)."""
     from tsf.verify import ladder
@@ -354,7 +354,7 @@ def deconflict(tsir: dict, workdir, max_iter: int = 4):
             break
         other = cols[0]["with"]
         a = next((x for x in tsir["actors"] if x["id"] == other), None)
-        if a is None or a["role"] == "ego":
+        if a is None or a["role"] == "ego" or other in protect:
             break
         if abs(a["initial"].get("t_offset", 0.0)) > 0.3:
             a["initial"]["t_offset"] = round(a["initial"]["t_offset"] * 0.4, 2)
