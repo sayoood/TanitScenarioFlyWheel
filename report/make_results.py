@@ -202,6 +202,22 @@ def free(path: Path, caption: str, label: str) -> str:
     return table(caption, label, "lr", ["metric", "value"], rows)
 
 
+def tone(root: Path) -> str:
+    rows = []
+    for p in sorted(root.glob("*/t1_summary.json")):
+        s = json.loads(p.read_text())
+        sc, tm = s["score"], s.get("timing") or [{}]
+        cos = [x["cosmos_s"] for x in tm if "cosmos_s" in x]
+        rows.append([s["scenario"].replace("_", " ")[:26], s["seconds"], s["chunks"], sc["EPDMS"], sc["NC"], sc["DAC"],
+                     sc["TLC"], sc["TTC"], sc["EP"], sc["C"], round(sum(cos) / len(cos), 1) if cos else None,
+                     round(s["wall_s"] / 60, 1)])
+    if not rows:
+        return r"\noindent\todo{T1 closed loop pending}"
+    return table("T1 neural closed loop: REFe SFT-4 driving on Cosmos3-Nano-Sim-Auto frames (5 cameras, 480p).",
+                 "tab:tone", "lrrrrrrrrrrr", ["scenario", "s", "chunks", "EPDMS", "NC", "DAC", "TLC", "TTC", "EP", "C",
+                                              "Cosmos s/chunk", "wall min"], rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", default=str(Path(__file__).resolve().parents[1] / "runs" / "api"))
@@ -223,6 +239,9 @@ def main():
                                                    "tab:uc2"),
         r"\newcommand{\ResultsAblation}{%s}" % ablation(_j(HOME / "tsf/dev/ablation/summary.json"),
                                                         Path(a.out).parent / "figs" / "ablation.png"),
+        r"\newcommand{\ResultsRefe}{%s}" % free(HOME / "tsf/dev/refe/results.json", "REFe SFT-4 on Thor: latency and "
+                                                "open-loop sanity on a PhysicalAI-AV clip (ADE/FDE in m)", "tab:refe"),
+        r"\newcommand{\ResultsTone}{%s}" % tone(Path(a.runs).parent / "t1"),
     ])
     Path(a.out).write_text(tex)
     print(f"wrote {a.out}: {len(runs)} runs, batch={'yes' if batch else 'no'}, h2 gens={len(h2)}")

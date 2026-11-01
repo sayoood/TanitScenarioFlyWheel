@@ -409,6 +409,29 @@ EPDMS structure \cite{navsim}:
 The policy under test is TanitAD REFe SFT-4 (ViT-L, 322M parameters, NAVSIM PDMS 88.25), which consumes four
 NAVSIM pinhole cameras at 960$\times$512; an adapter reprojects the f-theta rig to these virtual pinholes.
 
+\paragraph{REFe on the Thor.} The model runs in a persistent inference server: about 0.63\,s per forward
+pass in bf16 and 1.7\,GB of GPU memory, replanning at 2\,Hz. Between plans, the plan is re-expressed in the
+moving ego frame.
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item \emph{Checkpoint.} The SFT-4 checkpoint was rebuilt with TanitAD's own \texttt{build\_sft\_ckpt.py}
+  from the base model and the scorer states, and reproduces all 643 tensors exactly.
+\item \emph{Rig adapter.} One cached remap per virtual camera intersects each NAVSIM pinhole ray (with
+  NAVSIM's own lens distortion) with the road plane and projects it into the Hyperion f-theta cameras.
+  CAM\_B0 blends the two rear cameras.
+\end{itemize}
+On a real PhysicalAI-AV clip, REFe through the adapter reaches an ADE of 2.40\,m versus 2.67\,m for constant
+velocity (\cref{tab:refe}). The best of its 64 proposals reaches 0.70\,m, but its scorer picks a plan close
+to constant velocity, the same pattern as TanitAD's own NAVSIM reading.
+
+\paragraph{T1 neural closed loop.} At each 2\,Hz replan, the last 17 frames of the \emph{closed-loop} world
+(the ego as driven by REFe) are exported to RDS-HQ. WSM renders the five cameras REFe needs. Sim-Auto
+generates the chunk, conditioned on the previous chunk's last frames. REFe then plans from the newest
+generated frames.
+
+\ResultsRefe
+
+\ResultsTone
+
 \ResultsKPI
 
 %=====================================================================================================
