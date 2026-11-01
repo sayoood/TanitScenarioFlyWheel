@@ -1,0 +1,332 @@
+{
+  "userInput": {
+    "userInput": "[Safety Analyst]: I need a cut-in scenario with a twist. The ego vehicle is in the middle lane of a three-lane highway. One car cuts in front from the right lane. Almost immediately after, another car cuts in from the left lane, forcing the ego to handle two threats in quick succession from different sides. This scenario must be evaluated for potential safety risks, including collision probability, response latency, and driver decision ambiguity. Any flaw in the vehicles handling of simultaneous lateral intrusions must be flagged and mitigated to prevent real-world risk escalation."
+  },
+  "groundTruthAnswer": {
+    "reasoning": {
+      "analysisOfUserQuery": {
+        "extractedInformation": {
+          "scenarioGoal": "Test the ego vehicle's ability to manage a complex, multi-threat situation involving two sequential cut-in maneuvers from opposite sides.",
+          "actors": [
+            {
+              "id": "Ego",
+              "type": "ego",
+              "initialState": {
+                "lane": "middle lane"
+              },
+              "behavior": "React to a cut-in from the right, then immediately to another from the left."
+            },
+            {
+              "id": "Cutter_Right",
+              "type": "agent",
+              "initialState": {
+                "lane": "right lane"
+              },
+              "behavior": "Performs the first cut-in maneuver."
+            },
+            {
+              "id": "Cutter_Left",
+              "type": "agent",
+              "initialState": {
+                "lane": "left lane"
+              },
+              "behavior": "Performs the second cut-in maneuver immediately after the first."
+            }
+          ],
+          "road": {
+            "type": "highway",
+            "lanes": "three-lane"
+          },
+          "environment": {
+            "weather": "clear",
+            "lighting": "daylight",
+            "friction": 1.0,
+            "speedLimitKmh": 120
+          }
+        },
+        "variables": [
+          {
+            "name": "Maneuver_Sequence",
+            "value": "Cut-in from right, then cut-in from left",
+            "unit": null
+          },
+          {
+            "name": "Timing",
+            "value": "almost immediately after",
+            "unit": "seconds"
+          }
+        ],
+        "semanticMeaning": "This is a high-complexity stress test for the ego's planning and control systems. The scenario evaluates the ability to re-plan in real-time. After identifying and reacting to the first threat, the system's state changes (e.g., it starts braking). It must then detect a second, distinct threat while already in a transient state and execute a new, appropriate response without instability or overreaction. It tests the system's ability to handle more than one dynamic actor simultaneously."
+      },
+      "planToDefineScenario": [
+        "Define a straight, three-lane highway in OpenDRIVE.",
+        "Define the three actors: Ego, Cutter_Right, and Cutter_Left. Quantify their initial speeds and positions to set up the double overtake.",
+        "Model the dynamic behaviors as two distinct maneuvers. In OpenSCENARIO 1.x, this will involve two separate `ManeuverGroups`, one for each cutting vehicle.",
+        "Define the triggers carefully. The first cut-in (from the right) can be triggered by relative distance to the Ego. The crucial part is triggering the second cut-in (from the left). This should be triggered by the *state* of the first cut-in, for example, when the first cutter's `LaneChangeAction` is in its `runningState` or has just completed.",
+        "Assemble the logic into OSC1 and OSC2 formats, paying close attention to the sequential triggering logic.",
+        "Create a Python script that simulates the three vehicles and their state-driven maneuvers.",
+        "Derive functional requirements that focus on multi-object tracking, threat prioritization, and stable control under rapidly changing conditions."
+      ],
+      "requiredAssumptionsAndMissingValues": {
+        "assumptions": [
+          "The two cutting vehicles are initially positioned such that a sequential cut-in is kinematically plausible.",
+          "The ego vehicle remains in the middle lane throughout the scenario.",
+          "'Almost immediately after' is quantified as a short time delay after the first maneuver begins."
+        ],
+        "missingValues": [
+          {
+            "variable": "Ego Speed",
+            "value": "30.56 m/s (110 km/h)",
+            "source": "Assumption for standard highway speed."
+          },
+          {
+            "variable": "Cutter_Right Speed",
+            "value": "33.33 m/s (120 km/h)",
+            "source": "Assumption for overtaking vehicle."
+          },
+          {
+            "variable": "Cutter_Left Speed",
+            "value": "36.11 m/s (130 km/h)",
+            "source": "Assumption for a slightly faster second overtaker."
+          },
+          {
+            "variable": "Initial Positions",
+            "value": "Ego at s=500 (middle lane). Cutter_Right at s=450 (right lane). Cutter_Left at s=430 (left lane).",
+            "source": "Staggered positions to allow for the sequential overtake and cut-in."
+          },
+          {
+            "variable": "Second Cut-in Trigger",
+            "value": "Trigger 1.0 second after the first `LaneChangeAction` begins.",
+            "source": "Quantification of 'almost immediately after' to ensure a rapid sequence of events."
+          }
+        ]
+      },
+      "mathematicalCorpus": [
+        "TTC(t) = (s_cutter(t) - s_ego(t) - L_veh) / max(epsilon, v_ego(t) - v_cutter(t))",
+        "d_safe(v_ego) = v_ego * tau_reaction + (v_ego^2) / (2 * mu * g) + d_buffer",
+        "a_req(t) = - (v_ego(t) - v_cutter(t))^2 / (2 * (s_cutter(t) - s_ego(t) - L_veh))",
+        "Delta_s_threat(t) = min_{k in {R, L}} (s_{cutter,k}(t) - s_ego(t))"
+      ],
+      "firstHypothesis": {
+        "roadDescription": "A standard straight, three-lane highway.",
+        "openScenarioDescription1": "<!-- Hypothesis: Build the scenario with two ManeuverGroups. The trigger for the second group will depend on the state of an action in the first. Intentional Error: I will set the trigger for the second cut-in to be a `RelativeDistanceCondition` to the Ego. While this might work, it's not robust. The user's intent is that the second action is *linked* to the first. A better trigger depends on the state of the first action, not just geometry, to ensure the sequence happens as intended. -->\n<OpenSCENARIO>\n  <!-- ... Header, RoadNetwork, Entities ... -->\n  <Storyboard><Story><Act>\n    <ManeuverGroup name='RightCutterGroup'> <!-- ... Maneuver for Cutter_Right triggered by distance to Ego ... --> </ManeuverGroup>\n    <ManeuverGroup name='LeftCutterGroup'>\n      <Actors><EntityRef entityRef='Cutter_Left'/></Actors>\n      <Maneuver><Event name='LeftCutIn'>\n        <Action name='LeftLaneChange'>...</Action>\n        <!-- INTENTIONAL ERROR: This trigger is independent of the first action, making the sequence coincidental, not causal. -->\n        <StartTrigger><ByEntityCondition><EntityCondition><RelativeDistanceCondition entityRef='Ego' value='15' rule='lessThan'/></EntityCondition></ByEntityCondition></StartTrigger>\n      </Event></Maneuver>\n    </ManeuverGroup>\n  </Act></Story></Storyboard>\n</OpenSCENARIO>",
+        "openScenarioDescription2": "scenario Double_Sequential_Cut_In_Draft:\n    ego: Vehicle = Vehicle(kind: 'car')\n    cutter_right: Vehicle = Vehicle(kind: 'car')\n    cutter_left: Vehicle = Vehicle(kind: 'car')\n    do parallel:\n        ego.drive(speed: 30.56m/s)\n        serial:\n            cutter_right.change_lane(target: ego.lane, duration: 3.0s)\n            wait 1.0s\n            cutter_left.change_lane(target: ego.lane, duration: 3.0s)",
+        "pythonCode": "# Preliminary discrete state-machine kinematic verification\nimport numpy as np\nv_ego = 30.56\nv_cr = 33.33\nv_cl = 36.11\nt_eval = np.linspace(0, 20, 200)\ns_ego = 500.0 + v_ego * t_eval\ns_cr = 450.0 + v_cr * t_eval\ns_cl = 430.0 + v_cl * t_eval\nmin_gap = float(np.min(np.minimum(s_cr - s_ego, s_cl - s_ego)))\nprint(f'Minimum kinematic conflict clearance: {min_gap:.2f} m')",
+        "functionalRequirements": "The requirements will focus on maintaining safety and stability while managing two simultaneous threats."
+      },
+      "validationAndJudging": {
+        "syntaxCheck": {
+          "openScenario1": {
+            "isValid": true,
+            "errors": []
+          },
+          "openScenario2": {
+            "isValid": true,
+            "errors": []
+          },
+          "openDrive": {
+            "isValid": true,
+            "errors": []
+          },
+          "pythonCode": {
+            "isValid": true,
+            "errors": []
+          }
+        },
+        "scenarioValidityCheck": {
+          "isConsistent": false,
+          "conflicts": [
+            "Logical Error in OSC1 Triggering: The hypothesis uses independent distance-based triggers for both maneuvers. This fails to capture the user's intent of a sequential, linked event ('immediately after'). The timing would be purely coincidental based on initial speeds and positions. A robust implementation requires the second event's trigger to be a `StoryboardElementStateCondition` that checks if the first `LaneChangeAction` is in a specific state (e.g., `runningState`), creating a direct dependency."
+          ]
+        },
+        "improvements": [
+          "Correct the `StartTrigger` for the second `ManeuverGroup` (`LeftCutterGroup`). It will be changed to a `ByValueCondition` containing a `StoryboardElementStateCondition` that references the `name` of the first `LaneChangeAction` ('RightLaneChange') and triggers when that action is in the `runningState` with a specified `delay`.",
+          "The python code's state logic will be explicitly commented to show how `cutter_left_state` depends on `cutter_right_state`.",
+          "The functional requirements will be written to address threat prioritization, i.e., how the ego adapts its response when a second, potentially more critical, threat appears while it is already managing a first one."
+        ]
+      }
+    },
+    "openDriveRoadDescription": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<OpenDRIVE>\n    <header revMajor=\"1\" revMinor=\"6\" name=\"StraightHighway3Lanes\" version=\"1.0\" date=\"2023-10-27T18:00:00\"/>\n    <road name=\"Straight Highway\" length=\"2000.0\" id=\"1\" junction=\"-1\">\n        <planView>\n            <geometry s=\"0.0\" x=\"0.0\" y=\"0.0\" hdg=\"0.0\" length=\"2000.0\"><line/></geometry>\n        </planView>\n        <lanes>\n            <laneSection s=\"0.0\">\n                <right>\n                    <lane id=\"-1\" type=\"driving\" level=\"false\"><width sOffset=\"0.0\" a=\"3.5\" b=\"0\" c=\"0\" d=\"0\"/></lane>\n                </right>\n                <center><lane id=\"0\" type=\"driving\" level=\"false\"><width sOffset=\"0.0\" a=\"3.5\" b=\"0\" c=\"0\" d=\"0\"/></lane></center>\n                <left>\n                    <lane id=\"1\" type=\"driving\" level=\"false\"><width sOffset=\"0.0\" a=\"3.5\" b=\"0\" c=\"0\" d=\"0\"/></lane>\n                </left>\n            </laneSection>\n        </lanes>\n    </road>\n</OpenDRIVE>",
+    "assumptionsAndFilledMissedValues": {
+      "assumptions": [
+        "The second cut-in from the left begins 1.0 second after the first cut-in from the right starts.",
+        "The ego vehicle is expected to handle both threats without changing lanes itself.",
+        "The scenario occurs in clear, daylight conditions."
+      ],
+      "filledValues": [
+        {
+          "variable": "Ego Speed",
+          "value": "30.56 m/s (110 km/h)",
+          "source": "Assumption"
+        },
+        {
+          "variable": "Cutter_Right Speed",
+          "value": "33.33 m/s (120 km/h)",
+          "source": "Assumption"
+        },
+        {
+          "variable": "Cutter_Left Speed",
+          "value": "36.11 m/s (130 km/h)",
+          "source": "Assumption"
+        },
+        {
+          "variable": "Second Cut-in Delay",
+          "value": "1.0 s",
+          "source": "Quantification of 'almost immediately after'"
+        }
+      ]
+    },
+    "openScenarioDescription1": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<OpenSCENARIO>\n  <FileHeader revMajor=\"1\" revMinor=\"3\" date=\"2023-10-27T18:00:00Z\" description=\"Double Sequential Cut-In\" author=\"[Safety Analyst]\" />\n  <RoadNetwork><LogicFile filepath=\"Straight_Highway_3Lanes.xodr\"/></RoadNetwork>\n  <Entities>\n    <ScenarioObject name=\"Ego\"><Vehicle name=\"EgoCar\" vehicleCategory=\"car\"/></ScenarioObject>\n    <ScenarioObject name=\"Cutter_Right\"><Vehicle name=\"CarRight\" vehicleCategory=\"car\"/></ScenarioObject>\n    <ScenarioObject name=\"Cutter_Left\"><Vehicle name=\"CarLeft\" vehicleCategory=\"car\"/></ScenarioObject>\n  </Entities>\n  <Storyboard>\n    <Init>\n      <Actions>\n        <Private entityRef=\"Ego\">\n          <PrivateAction><LongitudinalAction><SpeedAction><SpeedActionTarget><AbsoluteTargetSpeed value=\"30.56\"/></SpeedActionTarget></SpeedAction></LongitudinalAction></PrivateAction>\n          <PrivateAction><TeleportAction><Position><LanePosition roadId=\"1\" laneId=\"0\" s=\"500\"/></Position></TeleportAction></PrivateAction>\n        </Private>\n        <Private entityRef=\"Cutter_Right\">\n          <PrivateAction><LongitudinalAction><SpeedAction><SpeedActionTarget><AbsoluteTargetSpeed value=\"33.33\"/></SpeedActionTarget></SpeedAction></LongitudinalAction></PrivateAction>\n          <PrivateAction><TeleportAction><Position><LanePosition roadId=\"1\" laneId=\"-1\" s=\"450\"/></Position></TeleportAction></PrivateAction>\n        </Private>\n        <Private entityRef=\"Cutter_Left\">\n          <PrivateAction><LongitudinalAction><SpeedAction><SpeedActionTarget><AbsoluteTargetSpeed value=\"36.11\"/></SpeedActionTarget></SpeedAction></LongitudinalAction></PrivateAction>\n          <PrivateAction><TeleportAction><Position><LanePosition roadId=\"1\" laneId=\"1\" s=\"430\"/></Position></TeleportAction></PrivateAction>\n        </Private>\n      </Actions>\n    </Init>\n    <Story name=\"MyStory\">\n      <Act name=\"DoubleCutInAct\">\n        <ManeuverGroup maximumExecutionCount=\"1\" name=\"RightCutInGroup\">\n          <Actors><EntityRef entityRef=\"Cutter_Right\"/></Actors>\n          <Maneuver name=\"RightCutInManeuver\">\n            <Event name=\"RightCutInEvent\" priority=\"overwrite\">\n              <Action name=\"RightLaneChange\">\n                <PrivateAction><LateralAction><LaneChangeAction>\n                  <LaneChangeActionDynamics dynamicsDimension=\"time\" dynamicsShape=\"cubic\" value=\"3.0\"/>\n                  <LaneChangeTarget><AbsoluteTargetLane value=\"0\"/></LaneChangeTarget>\n                </LaneChangeAction></LateralAction></PrivateAction>\n              </Action>\n              <StartTrigger><ByEntityCondition><EntityCondition><RelativeDistanceCondition entityRef=\"Ego\" value=\"20\" rule=\"lessThan\" freespace=\"true\"/></EntityCondition></ByEntityCondition></StartTrigger>\n            </Event>\n          </Maneuver>\n        </ManeuverGroup>\n        <ManeuverGroup maximumExecutionCount=\"1\" name=\"LeftCutInGroup\">\n          <Actors><EntityRef entityRef=\"Cutter_Left\"/></Actors>\n          <Maneuver name=\"LeftCutInManeuver\">\n            <Event name=\"LeftCutInEvent\" priority=\"overwrite\">\n              <Action name=\"LeftLaneChange\">\n                <PrivateAction><LateralAction><LaneChangeAction>\n                  <LaneChangeActionDynamics dynamicsDimension=\"time\" dynamicsShape=\"cubic\" value=\"3.0\"/>\n                  <LaneChangeTarget><AbsoluteTargetLane value=\"0\"/></LaneChangeTarget>\n                </LaneChangeAction></LateralAction></PrivateAction>\n              </Action>\n              <StartTrigger><ByValueCondition><StoryboardElementStateCondition storyboardElementType=\"action\" storyboardElementRef=\"RightLaneChange\" state=\"runningState\" delay=\"1.0\"/></ByValueCondition></StartTrigger>\n            </Event>\n          </Maneuver>\n        </ManeuverGroup>\n      </Act>\n    </Story>\n    <StopTrigger><ByValueCondition><SimulationTimeCondition value=\"25\" rule=\"greaterThan\"/></ByValueCondition></StopTrigger>\n  </Storyboard>\n</OpenSCENARIO>",
+    "openScenarioDescription2": "import 'standard.osc'\n\nscenario Double_Sequential_Cut_In:\n    ego: Vehicle = Vehicle(kind: 'car')\n    cutter_right: Vehicle = Vehicle(kind: 'car')\n    cutter_left: Vehicle = Vehicle(kind: 'car')\n    road: Road = Road(map: 'Straight_Highway_3Lanes.xodr')\n\n    behavior cut_in_right():\n        wait for longitudinal_distance(to: ego) < 20m\n        change_lane_to(lane: ego.lane, shape: cubic, duration: 3s)\n        drive()\n\n    behavior cut_in_left():\n        # Wait for the first maneuver to be in progress\n        wait for cutter_right.maneuver_is_running\n        wait for 1s\n        change_lane_to(lane: ego.lane, shape: cubic, duration: 3s)\n        drive()\n\n    do parallel:\n        ego.start(at: road.lane_position(s: 500m, lane: 0), with: drive(speed: 30.56m/s))\n        cutter_right.start(at: road.lane_position(s: 450m, lane: -1), with: cut_in_right()) with(speed: 33.33m/s)\n        cutter_left.start(at: road.lane_position(s: 430m, lane: 1), with: cut_in_left()) with(speed: 36.11m/s)\n\n    wait for simulation_time >= 25s\n    end()",
+    "pythonCode": "import numpy as np\nimport matplotlib.pyplot as plt\n\n# --- Scenario Setup ---\nego = {'s': 500, 'speed': 30.56}\ncr = {'s': 450, 'speed': 33.33, 'state': 'APPROACHING', 'start_lc_time': 0}\ncl = {'s': 430, 'speed': 36.11, 'state': 'APPROACHING', 'start_lc_time': 0}\n\nLANE_CENTERS = {1: 1.75, 0: -1.75, -1: -5.25} # Right-hand traffic, OSC lanes 1, 0, -1\ndt = 0.1\nsim_time = 20.0\ntraj = {'ego': [], 'cr': [], 'cl': []}\n\nfor t in np.arange(0, sim_time, dt):\n    ego['s'] += ego['speed'] * dt\n    cr['s'] += cr['speed'] * dt\n    cl['s'] += cl['speed'] * dt\n\n    # State Transitions\n    if cr['state'] == 'APPROACHING' and (ego['s'] - cr['s']) < 20:\n        cr['state'] = 'CHANGING'\n        cr['start_lc_time'] = t\n    \n    if cl['state'] == 'APPROACHING' and cr['state'] == 'CHANGING' and (t - cr['start_lc_time']) > 1.0:\n        cl['state'] = 'CHANGING'\n        cl['start_lc_time'] = t\n\n    # Lateral Positions\n    def get_lat_pos(vehicle, start_lane, end_lane, duration):\n        y = LANE_CENTERS[start_lane]\n        if vehicle['state'] == 'CHANGING':\n            ratio = (t - vehicle['start_lc_time']) / duration\n            if ratio <= 1.0:\n                interp = 3 * ratio**2 - 2 * ratio**3\n                y = LANE_CENTERS[start_lane] + (LANE_CENTERS[end_lane] - LANE_CENTERS[start_lane]) * interp\n            else:\n                y = LANE_CENTERS[end_lane]\n        return y\n\n    cr_y = get_lat_pos(cr, -1, 0, 3.0)\n    cl_y = get_lat_pos(cl, 1, 0, 3.0)\n\n    traj['ego'].append([ego['s'], LANE_CENTERS[0]])\n    traj['cr'].append([cr['s'], cr_y])\n    traj['cl'].append([cl['s'], cl_y])\n\n# --- Plotting ---\nfig, ax = plt.subplots(figsize=(12, 8))\npath_cr = np.array(traj['cr'])\npath_cl = np.array(traj['cl'])\nax.plot(np.array(traj['ego'])[:, 0], np.array(traj['ego'])[:, 1], label='Ego')\nax.plot(path_cr[:, 0], path_cr[:, 1], label='Cutter Right')\nax.plot(path_cl[:, 0], path_cl[:, 1], label='Cutter Left')\nax.set_title('Double Sequential Cut-In')\nax.set_xlabel('Longitudinal Position (m)')\nax.set_ylabel('Lateral Position (m)')\nax.grid(True)\nax.legend()\nplt.show()",
+    "codeBeamerScenarioDescription": {
+      "shortScenarioDescription": {
+        "title": "Double Sequential Cut-In from Both Sides",
+        "keywords": [
+          "cut-in",
+          "multi-vehicle",
+          "complex",
+          "sequential threat",
+          "stress test"
+        ],
+        "tags": [
+          "ASAM",
+          "safety-critical",
+          "complex-interaction"
+        ]
+      },
+      "scenarioCategory": "emergency_scenario",
+      "initialStates": [
+        {
+          "actorId": "Ego",
+          "longitudinalPosition": 500,
+          "lateralPosition": "Middle Lane",
+          "speed": 30.56
+        },
+        {
+          "actorId": "Cutter_Right",
+          "longitudinalPosition": 450,
+          "lateralPosition": "Right Lane",
+          "speed": 33.33
+        },
+        {
+          "actorId": "Cutter_Left",
+          "longitudinalPosition": 430,
+          "lateralPosition": "Left Lane",
+          "speed": 36.11
+        }
+      ],
+      "finalStates": [
+        {
+          "actorId": "Ego",
+          "condition": "Ego has safely managed both cut-ins and is establishing a safe following distance to the new lead vehicle."
+        }
+      ],
+      "environmentConditions": {
+        "weather": "Clear",
+        "lightCondition": "Daylight",
+        "friction": 1.0
+      },
+      "roadDescription": {
+        "languageDescription": "A straight, three-lane highway.",
+        "topology": "Straight",
+        "numberOfLanes": 3
+      },
+      "staticEnvironment": [],
+      "dynamicEnvironment": [
+        {
+          "id": "Ego",
+          "type": "car",
+          "description": "Vehicle under test, in middle lane."
+        },
+        {
+          "id": "Cutter_Right",
+          "type": "car",
+          "description": "Vehicle that performs the first cut-in from the right."
+        },
+        {
+          "id": "Cutter_Left",
+          "type": "car",
+          "description": "Vehicle that performs the second cut-in from the left."
+        }
+      ],
+      "events": [
+        {
+          "id": "right_cut_in",
+          "trigger": "Cutter_Right is less than 20m behind Ego.",
+          "action": "Cutter_Right begins changing into the middle lane."
+        },
+        {
+          "id": "left_cut_in",
+          "trigger": "1.0 second after 'right_cut_in' action begins.",
+          "action": "Cutter_Left begins changing into the middle lane."
+        }
+      ],
+      "behaviorSequence": {
+        "ego": [
+          "Drives at 110 km/h in the middle lane."
+        ],
+        "agents": [
+          {
+            "agentId": "Cutter_Right",
+            "behavior": [
+              "Overtakes Ego on the right.",
+              "Cuts into the middle lane."
+            ]
+          },
+          {
+            "agentId": "Cutter_Left",
+            "behavior": [
+              "Overtakes Ego on the left.",
+              "Cuts into the middle lane immediately after Cutter_Right begins its maneuver."
+            ]
+          }
+        ]
+      }
+    },
+    "derivedFunctionalRequirements": [
+      {
+        "id": "REQ-EGO-MULTI-01",
+        "requirement": "The ego vehicle shall maintain stable tracks for multiple dynamic objects simultaneously in adjacent lanes.",
+        "passCriteria": [
+          "The perception system log shows continuous, stable tracks for both Cutter_Right and Cutter_Left throughout the scenario."
+        ]
+      },
+      {
+        "id": "REQ-EGO-MULTI-02",
+        "requirement": "The ego vehicle shall be able to re-evaluate the primary collision threat when a new, more critical threat appears while managing an existing one.",
+        "passCriteria": [
+          "The system's threat assessment log shall initially identify Cutter_Right as the primary threat.",
+          "Within [time=0.5s] of Cutter_Left beginning its maneuver, the log shall show Cutter_Left as the new primary threat (due to higher closing speed and closer final position)."
+        ]
+      },
+      {
+        "id": "REQ-EGO-MULTI-03",
+        "requirement": "The ego vehicle shall adapt its control actions to safely mitigate a sequence of two hazards without unstable oscillations in speed or acceleration.",
+        "passCriteria": [
+          "The ego vehicle shall not collide with either cutting vehicle.",
+          "The commanded acceleration profile shall show a smooth, albeit strong, deceleration, without rapid sign changes (jerking).",
+          "The maximum deceleration shall not exceed [max_aeb_decel=6.0 m/s^2]."
+        ]
+      }
+    ],
+    "scenarioVariations": {
+      "description": "The complexity can be adjusted by changing the timing and relative speeds of the two cutting vehicles.",
+      "variableIntervals": [
+        {
+          "variable": "Time Delay Between Cut-ins",
+          "minValue": "0.2s (near simultaneous)",
+          "maxValue": "3.0s (more separated)"
+        },
+        {
+          "variable": "Relative Speeds",
+          "description": "The order can be swapped, with the slower vehicle cutting in second."
+        },
+        {
+          "variable": "Ego Lane",
+          "description": "The scenario can be mirrored with the ego in the right or left lane and the cutters in the middle/far lanes."
+        }
+      ]
+    }
+  }
+}
