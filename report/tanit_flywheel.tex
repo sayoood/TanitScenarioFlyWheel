@@ -314,6 +314,28 @@ generation~2 adopted nothing.
 \end{itemize}
 \Cref{tab:ablation} and \cref{fig:ablation} report all conditions on the same 12 queries and 2 repetitions.
 
+\paragraph{Round 2 result: iterate on the strongest context.} G is the best condition. It is correct in
+79\,\% of the runs (95\,\% CI 60--91\,\%; held-out queries 83\,\%), wins 6 paired cases against A and loses 1
+(two-sided sign test $p=0.125$), at a median 86\,s and 1.9k completion tokens per scenario. Repair turned
+6 of the replicate's 10 invalid first attempts into correct scenarios with 0.8 repair rounds on average.
+The two mechanisms add up: the self-describing schema as the specification lifts the one-shot from 38\,\%
+(B) to 58\,\% (A), and verifier repair adds another 17--38 points in every condition that has it.
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item \textbf{F} (agentic, schema in the system prompt) reaches 67\,\%, but its first attempt stays at
+  29\,\% (C: 25\,\%). Once the analysis and the exemplars are in the context, the schema no longer steers
+  the proposal; repair does the work, at 290\,s and 3.6k tokens.
+\item \textbf{E} (agentic, Harness$^2$-evolved harness) also reaches 67\,\%. Its first attempt doubles
+  from 25\,\% (C) to 50\,\% with a single adopted guardrail invariant, the clearest evidence that the
+  self-improvement loop works. It improved a weaker starting point, though: its edit space (guardrails,
+  lessons) cannot add the schema or drop exemplars.
+\end{itemize}
+\textbf{Consequence.} The Lifter now proposes from the schema-prompted context and repairs with the
+verifier (\texttt{lift\_mode = schema\_repair}); the analyst still runs, concurrently, because its
+quantified assumptions feed the IMDAD package. A production lift with this default (a cyclist overtake at
+dusk) passed L3 on the first attempt with a valid package in 123\,s. Harness$^2$ keeps optimising the
+agentic path, and its edit space should be widened to the composition of the context. With 12 queries
+the intervals of E, F and G overlap; a larger held-out suite is the next step for stronger claims.
+
 \IfFileExists{figs/ablation.png}{\begin{figure}[h]\centering
 \includegraphics[width=0.9\linewidth]{figs/ablation.png}
 \caption{Correct rate (L3-valid and every intent check passed) per condition, probe vs.\ held-out queries,
