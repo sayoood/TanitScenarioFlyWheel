@@ -481,11 +481,13 @@ class TanitSim:
     def _idm(self, ag: Agent, gap: float, v_lead: float, T: float, a_lead: float | None = None) -> float:
         """ACC model (Kesting, Treiber & Helbing 2010): IDM blended with the constant-acceleration
         heuristic (CAH), which avoids IDM's over-braking on cut-ins with a faster/opening leader."""
-        s0, delta, coolness = 2.0, 4, 0.99
+        s0, coolness = 2.0, 0.99
         v0 = max(ag.v_des, 0.1)
-        free = 1 - (ag.v / v0) ** delta if ag.v <= v0 else -(1 - (v0 / max(ag.v, 1e-3)) ** delta) * 2
+        free = 1 - (ag.v / v0) ** 4 if ag.v <= v0 else -(1 - (v0 / max(ag.v, 1e-3)) ** 4) * 2
         if math.isinf(gap):
-            return ag.a_max * free
+            # free road: saturating P-controller (tau 0.6 s) instead of IDM's (v/v0)^4 creep, so a speed_change
+            # reaches its target at the commanded rate (OpenSCENARIO linear SpeedAction semantics)
+            return ag.a_max * min(1.0, max(-2.0, (v0 - ag.v) / (ag.a_max * 0.6)))
         s = max(gap, 0.1)
         s_star = s0 + max(0.0, ag.v * T + ag.v * (ag.v - v_lead) / (2 * math.sqrt(ag.a_max * ag.b_comf)))
         a_idm = ag.a_max * (free - (s_star / s) ** 2)

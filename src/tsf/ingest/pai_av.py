@@ -153,6 +153,12 @@ def _rdp(t: np.ndarray, v: np.ndarray, tol: float) -> list[int]:
     return [0] + rec(0, len(t) - 1) + [len(t) - 1]
 
 
+def _lane_speed(ref: Reference, sd: np.ndarray, ds_dt: np.ndarray) -> np.ndarray:
+    """Reference-line s-rate -> speed along a lane at lateral offset d (a lane left of a left curve is shorter),
+    so the simulated actor, which drives its lane path, keeps the logged road-coordinate progress."""
+    return ds_dt * np.clip(1 - np.interp(sd[:, 0], ref.s, ref.kappa) * sd[:, 1], 0.5, 1.5)
+
+
 def speed_actions(aid: str, t: np.ndarray, v: np.ndarray, t0: float, tol: float = 1.0) -> list[dict]:
     idx = _rdp(t, v, tol)
     acts = []
@@ -254,10 +260,10 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
     s_off = ref.back                                  # road s = reference s + back
     actors, actions = [], []
     ego_s0 = float(ego_sd[i0, 0]) + s_off
+    ds_ego = _lane_speed(ref, ego_sd, gaussian_filter1d(np.gradient(ego_sd[:, 0], clip.t), 5))
     actors.append({"id": "ego", "role": "ego", "category": "car", "initial": {"road": 0, "direction": "forward",
-                   "lane": ego_lane, "s": round(ego_s0, 2)}, "initial_speed": round(float(clip.v[i0]), 2)})
-    ds_ego = np.gradient(ego_sd[:, 0], clip.t)
-    actions += speed_actions("ego", te, gaussian_filter1d(ds_ego, 5)[i0:], t0)
+                   "lane": ego_lane, "s": round(ego_s0, 2)}, "initial_speed": round(float(ds_ego[i0]), 2)})
+    actions += speed_actions("ego", te, ds_ego[i0:], t0)
     actions += lane_actions("ego", te, ego_sd[i0:, 1] - ego_d0, t0)
     actions += offset_actions("ego", te, ego_sd[i0:, 1] - ego_d0, t0)
     gt = {"ego": {"t": (te - t0).tolist(), "s": (ego_sd[i0:, 0] + s_off).tolist(), "d": (ego_sd[i0:, 1] - ego_d0).tolist()}}
@@ -267,8 +273,8 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
         if len(ts) < 3:
             continue
         sd = _sample(tr, ts)
+        v = _lane_speed(ref, sd, gaussian_filter1d(np.gradient(sd[:, 0], ts), 4))
         sd[:, 1] -= ego_d0
-        v = gaussian_filter1d(np.gradient(sd[:, 0], ts), 4)
         L = float(ref.s[-1] - ref.s[0])
         s_fwd = sd[:, 0] + s_off                              # road s in the forward direction
         if dh > 3 * math.pi / 4:                              # oncoming: backward lanes, s runs from the road end
