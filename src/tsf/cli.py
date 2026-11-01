@@ -106,5 +106,12 @@ def augment(scenario: Path, out: Path = Path("runs/aug"), n_seed: int = 32, n_it
     print(summ)
 
 
+@app.command()
+def serve(host: str = "0.0.0.0", port: int = 8080):
+    """Flywheel API + event stream for the operator UI (docs/API.md)."""
+    import uvicorn
+    uvicorn.run("tsf.server.app:app", host=host, port=port, log_level="info")
+
+
 if __name__ == "__main__":
     app()

@@ -1,0 +1,31 @@
+{
+  "rig": {
+    "standard": "NVIDIA PhysicalAI-AV (Hyperion 8.1 subset)",
+    "cameras": [
+      {"name": "camera_front_wide_120fov", "model": "ftheta", "fov_deg": 120, "res": [1920, 1080], "fps": 30},
+      {"name": "camera_front_tele_30fov", "model": "ftheta", "fov_deg": 30, "res": [1920, 1080], "fps": 30},
+      {"name": "camera_cross_left_120fov", "model": "ftheta", "fov_deg": 120, "res": [1920, 1080], "fps": 30},
+      {"name": "camera_cross_right_120fov", "model": "ftheta", "fov_deg": 120, "res": [1920, 1080], "fps": 30},
+      {"name": "camera_rear_left_70fov", "model": "ftheta", "fov_deg": 70, "res": [1920, 1080], "fps": 30},
+      {"name": "camera_rear_right_70fov", "model": "ftheta", "fov_deg": 70, "res": [1920, 1080], "fps": 30},
+      {"name": "camera_rear_tele_30fov", "model": "ftheta", "fov_deg": 30, "res": [1920, 1080], "fps": 30}
+    ],
+    "lidar": {"name": "lidar_top_360fov", "beams": 128, "hz": 10}
+  },
+  "render": {"views": 7, "res": "480p", "frames": 121, "fps": 30, "lidar": true,
+             "sim_model": "nvidia/Cosmos3-Nano-Sim-Auto", "transfer_model": "nvidia/Cosmos3-Nano-Transfer-Auto"},
+  "augment": {
+    "n": 8,
+    "strategies": ["behavior", "weather", "time_of_day", "road_surface"],
+    "behavior": {"n_seed": 16, "n_iter": 2, "n_per_iter": 8, "ttc_band_s": [0.8, 3.0]}
+  },
+  "closed_loop": {
+    "policies": {
+      "const_vel": {"tier": "T0", "desc": "keep initial speed and heading"},
+      "accel_decel": {"tier": "T0", "desc": "accelerate 1.5 m/s2 for 6 s, then brake 2.5 m/s2 to standstill"},
+      "refe_sft4": {"tier": "T1", "desc": "TanitAD REFe SFT-4 (NAVSIM PDMS 88.25), 4 pinhole cams via f-theta reprojection"}
+    },
+    "default": "const_vel"
+  },
+  "llm": {"model": "qwen3.8-27b", "url": "http://127.0.0.1:8000/v1"}
+}
