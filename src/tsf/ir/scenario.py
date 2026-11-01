@@ -147,6 +147,8 @@ class Actor(_M):
     initial_speed: float = Field(0.0, ge=0)
     route: list[Literal["straight", "left", "right", "u_turn"]] = Field(
         default_factory=list, description="turn choice at each junction encountered, in order")
+    headway: float | None = Field(None, ge=0.4, le=3.0, description="driver model: desired time headway to the "
+                                  "vehicle ahead in s (default 1.5); lifted from logs for replayed drivers")
 
     def dims(self) -> tuple[float, float, float]:
         return self.dimensions or DEFAULT_DIMS[self.category]

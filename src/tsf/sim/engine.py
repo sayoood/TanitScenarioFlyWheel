@@ -180,6 +180,7 @@ class Agent:
     a_max: float = 2.0
     b_comf: float = 3.0
     time_gap: float = 1.5
+    headway: float = 1.5              # desired time headway to any leader (driver parameter)
     follow_target: str | None = None
     lc: dict | None = None            # active lane change {d0, t0, T}
     d_off: float = 0.0                # persistent in-lane offset (lane_offset / initial t_offset)
@@ -253,6 +254,7 @@ class TanitSim:
                 ag = Agent(a.id, a.role, a.category, (l, w, h), Path(m, keys), prog, a.initial_speed, rem,
                            d=a.initial.t_offset, d_off=a.initial.t_offset, v_des=max(a.initial_speed, 0.1))
                 ag.turns_all = list(a.route)
+                ag.headway = a.headway or 1.5
                 if a.role == "ego" and ego_policy is not None:
                     ag.external = True
             self.agents[a.id] = ag
@@ -531,7 +533,7 @@ class TanitSim:
             if ag.external:
                 continue
             gap, vl, lid = self._leader_gap(ag)
-            T = ag.time_gap if ag.follow_target and lid == ag.follow_target else 1.5
+            T = ag.time_gap if ag.follow_target and lid == ag.follow_target else ag.headway
             acc = self._idm(ag, gap, vl, T, self.agents[lid].a if lid else None)
             sd = self._must_stop(ag)
             if sd is not None:  # virtual standing obstacle 1 m past the line; IDM s0=2 m -> stop ~1 m before it

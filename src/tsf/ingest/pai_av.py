@@ -265,6 +265,37 @@ def stitch(tracks: list[Track], gap_s: float = 1.5, tol_m: float = 3.0, dup_m: f
     return out
 
 
+def headways(actors: list[dict], gt: dict, horizon: float, dt: float = 0.2) -> dict[str, float]:
+    """Logged time headway (10th percentile) of each driver to its same-lane leader. The ACC driver model's
+    default 1.5 s exceeds what many real drivers keep; replaying a log with it brakes hard at t=0 on gaps the
+    real driver accepted. Only headways below 1.4 s are returned (clipped at 0.5 s)."""
+    tq = np.arange(0.0, horizon, dt)
+    tr = {}
+    for a in actors:
+        g = gt.get(a["id"])
+        if not g or len(g["t"]) < 3:
+            continue
+        t = np.asarray(g["t"])
+        m = (tq >= t[0]) & (tq <= t[-1])
+        s = np.where(m, np.interp(tq, t, g["s"]), np.nan)
+        d = np.where(m, np.interp(tq, t, g["d"]), np.nan)
+        tr[a["id"]] = (a["initial"]["direction"], s, d, (a.get("dimensions") or [4.6])[0])
+    out = {}
+    with np.errstate(invalid="ignore", divide="ignore"):
+        for i, (di, si, ddi, li) in tr.items():
+            v = np.gradient(si, tq)
+            hw = [np.where((sj - si - (li + lj) / 2 > 0) & (np.abs(ddj - ddi) < 1.8) & (v > 3),
+                           (sj - si - (li + lj) / 2) / v, np.inf)
+                  for j, (dj, sj, ddj, lj) in tr.items() if j != i and dj == di]
+            if not hw:
+                continue
+            h = np.min(np.stack(hw), 0)
+            h = h[np.isfinite(h)]
+            if len(h) >= 5 and (p := float(np.percentile(h, 10))) < 1.4:
+                out[i] = round(max(0.5, p), 2)
+    return out
+
+
 # ----------------------------------------------------------------------------- lift
 def _extent(clip: Clip, t0: float, duration: float) -> tuple[float, float]:
     """Road extension (back, fwd) so that late appearances back-extrapolate to t0 without being clipped onto the road
@@ -382,6 +413,10 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
                        "dimensions": [round(x, 2) for x in tr.lwh]})
         actions += acts
         gt[aid] = {"t": (ts - t0).tolist(), "s": s_gt.tolist(), "d": sd[:, 1].tolist(), "direction": init["direction"]}
+    hw = headways(actors, gt, duration)                      # replayed drivers keep their logged headway
+    for a in actors:
+        if a["id"] in hw:
+            a["headway"] = hw[a["id"]]
     seg_total = ref.s[-1] - ref.s[0]
     tsir = {
         "meta": {"id": f"pai_{clip.id[:8]}", "title": title or f"PhysicalAI-AV snippet {clip.id[:8]}",
