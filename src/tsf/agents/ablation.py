@@ -214,10 +214,7 @@ def run_job(cond: str, qi: int, rep_i: int) -> list[dict]:
     t0 = time.perf_counter()
     if cond in ("A", "B"):
         if cond == "A":
-            msgs = [{"role": "system", "content": BARE + "
-
-TSIR JSON schema:
-" +
+            msgs = [{"role": "system", "content": BARE + "\n\nTSIR JSON schema:\n" +
                      json.dumps(lif._tsir_schema, separators=(",", ":"))},
                     {"role": "user", "content": f"Use meta.id = \"{sid}\".\nRequest:\n{q}"}]
         else:
