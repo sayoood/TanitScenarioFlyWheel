@@ -141,7 +141,8 @@ class Ctx:
 
 
 def summary(run: dict) -> dict:
-    return {k: run.get(k) for k in ("id", "uc", "title", "status", "created", "seconds", "score", "kpis")}
+    return {k: run[k] for k in ("id", "uc", "title", "status", "created", "seconds", "score", "kpis")
+            if run.get(k) is not None}  # optional fields are omitted, never null (API.md `?:`)
 
 
 def artifacts(d: Path) -> list[dict]:
