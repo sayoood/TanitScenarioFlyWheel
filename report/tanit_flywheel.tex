@@ -287,6 +287,31 @@ cases that a condition gets right and A gets wrong, and vice versa.
 
 \ResultsAblation
 
+\paragraph{Round 1: the context was the bottleneck, not the iteration.} The first round (A--D) contradicted
+the design assumption. The schema-prompted one-shot baseline A was correct in 58\,\% of the runs.
+The seed-harness one-shot B was correct in 38\,\%, losing 6 paired cases to A and winning 1. The agentic
+first attempt C reached 25\,\%, and only verifier-guided repair (D) brought the agent back to A's level, at
+about five times the latency. The failure modes explain why:
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item A sees the \emph{self-describing} TSIR schema, whose field descriptions say what each value means.
+\item B--D see the harness prose and verified exemplars, while the grammar enforces the schema without
+  explaining it. B's dominant failure (6 of 15) was copying positions from exemplars whose roads differ, e.g.\
+  \texttt{s=175} on a 150\,m approach.
+\item Repair is effective: it turned 7 of C's 18 failures into correct scenarios (D, +29 points). But it
+  repairs the agent's own context-induced errors.
+\end{itemize}
+Harness$^2$ could not have found this. Its edits are limited to guardrail rules and lessons; it can neither
+remove exemplars nor add the schema. Generation~1 adopted one invariant (probe score 0.777 $\to$ 0.809), and
+generation~2 adopted nothing.
+
+\paragraph{Round 2: isolating repair and schema-as-spec.} Two conditions were added:
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item \textbf{G}: A plus the same verifier-guided repair loop, i.e.\ iteration on the strongest single-call
+  context. Its first attempt A$'$ is an independent replicate of A.
+\item \textbf{F}: D with the schema added to the system prompt.
+\end{itemize}
+\Cref{tab:ablation} and \cref{fig:ablation} report all conditions on the same 12 queries and 2 repetitions.
+
 \IfFileExists{figs/ablation.png}{\begin{figure}[h]\centering
 \includegraphics[width=0.9\linewidth]{figs/ablation.png}
 \caption{Correct rate (L3-valid and every intent check passed) per condition, probe vs.\ held-out queries,
