@@ -461,7 +461,27 @@ generated frames.
 %=====================================================================================================
 \section{UC2: dash-cam video to scenario}
 NVIDIA ViPE \cite{vipe} estimates camera intrinsics, metric depth and camera poses from a single video.
-The ego track (planar $x,y,\psi,v$ in a gravity-aligned frame) seeds the TSIR ego route and speed profile.
+The ego track (planar $x,y,\psi,v$ in a gravity-aligned frame) seeds the TSIR ego route and speed profile;
+a VLM description of six keyframes supplies road layout, environment and the other road users.
+Four findings made ViPE usable on the Thor and on real dash-cam footage:
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item \textbf{Memory.} ViPE caches the whole clip in host memory (24--33\,GB for 30--40\,s at 720p), which
+  triggered the kernel OOM killer next to the resident LLM. Clips are now processed in 20\,s windows with
+  2\,s overlap, chained at the overlap pose, at 480p and 15\,fps, in containers capped at 26\,GB host and
+  16\,GB GPU memory (peak 6.3\,GB per window).
+\item \textbf{Numerics.} The CUDA forward-compatibility cuDNN on the Thor returns wrong convolution results
+  (MoGe-2 depth came out near-constant); the worker runs with cuDNN disabled, matching the CPU reference.
+\item \textbf{Intrinsics.} ViPE's default focal initialisation drifted to $\approx$3000\,px on near-static
+  clips, i.e.\ a 10\,m camera height. The MoGe-2 field of view, held fixed in the bundle adjustment, gives
+  camera heights of 1.1--1.5\,m on all three clips, the expected range for a windshield camera.
+\item \textbf{Glitches and transcription.} A SLAM glitch produced a $-32^\circ$ heading jump and an 81\,km/h
+  spike on a clip that barely moves. The track is despiked with vehicle limits (6\,m/s$^2$, 5\,m turn radius,
+  8\,m/s$^2$ lateral; heading changes on rejected speed jumps are dropped). The LLM transcribed the measured
+  stop-and-go profile poorly (one ``accelerate to 50\,km/h'' for a 16\,km/h peak), so the ego's speed
+  actions are now \emph{pinned}: Douglas--Peucker segments of the ViPE profile replace them before every
+  verification, and the model writes everything else. Offline, pinning reduces the speed error on the three
+  clips from 13.4, 11.8 and 0.5\,km/h to 0.8, 2.2 and 0.2\,km/h, and all three scenarios stay valid.
+\end{itemize}
 
 \ResultsUCtwo
 
