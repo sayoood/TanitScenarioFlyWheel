@@ -420,8 +420,6 @@ class TanitSim:
             if gap < best:
                 ov = o.v * math.cos(wrap(o.yaw - ag.yaw))
                 best, bv, bid = gap, max(ov, 0.0), o.id
-        if ag.follow_target and bid != ag.follow_target and ag.follow_target in self.agents:
-            pass
         return best, bv, bid
 
     def _must_stop(self, ag: Agent) -> float | None:
@@ -473,14 +471,28 @@ class TanitSim:
                 return True
         return False
 
-    def _idm(self, ag: Agent, gap: float, v_lead: float, T: float) -> float:
-        s0, delta = 2.0, 4
+    def _idm(self, ag: Agent, gap: float, v_lead: float, T: float, a_lead: float | None = None) -> float:
+        """ACC model (Kesting, Treiber & Helbing 2010): IDM blended with the constant-acceleration
+        heuristic (CAH), which avoids IDM's over-braking on cut-ins with a faster/opening leader."""
+        s0, delta, coolness = 2.0, 4, 0.99
         v0 = max(ag.v_des, 0.1)
         free = 1 - (ag.v / v0) ** delta if ag.v <= v0 else -(1 - (v0 / max(ag.v, 1e-3)) ** delta) * 2
         if math.isinf(gap):
             return ag.a_max * free
+        s = max(gap, 0.1)
         s_star = s0 + max(0.0, ag.v * T + ag.v * (ag.v - v_lead) / (2 * math.sqrt(ag.a_max * ag.b_comf)))
-        return ag.a_max * (free - (s_star / max(gap, 0.1)) ** 2)
+        a_idm = ag.a_max * (free - (s_star / s) ** 2)
+        if a_lead is None:
+            return a_idm
+        al = min(a_lead, ag.a_max)
+        if v_lead * (ag.v - v_lead) <= -2 * s * al:
+            a_cah = ag.v ** 2 * al / max(v_lead ** 2 - 2 * s * al, 1e-6)
+        else:
+            a_cah = al - (max(ag.v - v_lead, 0.0) ** 2) / (2 * s)
+        if a_idm >= a_cah:
+            return a_idm
+        b = ag.b_comf
+        return (1 - coolness) * a_idm + coolness * (a_cah + b * math.tanh((a_idm - a_cah) / b))
 
     # ---------------------------------------------------------------- step
     def _update_pose(self, ag: Agent):
@@ -511,7 +523,7 @@ class TanitSim:
                 continue
             gap, vl, lid = self._leader_gap(ag)
             T = ag.time_gap if ag.follow_target and lid == ag.follow_target else 1.5
-            acc = self._idm(ag, gap, vl, T)
+            acc = self._idm(ag, gap, vl, T, self.agents[lid].a if lid else None)
             sd = self._must_stop(ag)
             if sd is not None:
                 acc = min(acc, self._idm(ag, max(sd - 1.0, 0.05), 0.0, 1.0))
