@@ -33,6 +33,9 @@ def tsir_lane_key(sc: Scenario, m: OdrMap, pos) -> tuple[LaneKey, float]:
     """TSIR LanePosition -> (OpenDRIVE lane key, progress along that lane in driving direction)."""
     rid, lid, s_road = odr_position(sc, pos)
     road = m.roads[rid]
+    if not -1e-6 <= s_road <= road.length + 1e-6:
+        raise ValueError(f"position s={pos.s} lies outside road {pos.road} ({pos.direction}), whose length is "
+                         f"{road.length:.0f} m: place the actor within 0..{road.length:.0f} m or lengthen the road/approach")
     si = max(i for i, sec in enumerate(road.sections) if sec.s <= s_road + 1e-6)
     key = (road.id, si, lid)
     if key not in m.lanes:

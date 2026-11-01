@@ -39,6 +39,17 @@ def _set(doc: dict, pointer: str, value):
         cur[last] = value
 
 
+def _resolves(doc: dict, pointer: str) -> bool:
+    try:
+        cur = doc
+        for p in pointer.lstrip("/").split("/"):
+            p = p.replace("~1", "/").replace("~0", "~")
+            cur = cur[int(p)] if isinstance(cur, list) else cur[p]
+        return isinstance(cur, (int, float))
+    except (KeyError, IndexError, ValueError, TypeError):
+        return False
+
+
 @dataclass
 class Variant:
     values: dict
@@ -80,8 +91,10 @@ class Augmenter:
     def __init__(self, sc: Scenario, m: OdrMap, grid: int = 8, seed: int = 0):
         self.sc, self.m, self.grid = sc, m, grid
         self.base = json.loads(sc.model_dump_json())
-        self.params = [p for p in sc.parameters if p.name not in APPEARANCE and p.distribution == "uniform"
-                       and p.path.split("/")[-1] not in APPEARANCE]
+        # numeric ranges whose JSON pointer resolves (LLM-written parameter lists are not trusted blindly)
+        self.params = [p for p in sc.parameters if p.name not in APPEARANCE and p.distribution in ("uniform", "normal")
+                       and p.path.split("/")[-1] not in APPEARANCE and p.low is not None and p.high is not None
+                       and p.high > p.low and _resolves(self.base, p.path)]
         self.rng = np.random.default_rng(seed)
 
     def _eval(self, u: np.ndarray, keep_assertions: set[str]) -> Variant:
