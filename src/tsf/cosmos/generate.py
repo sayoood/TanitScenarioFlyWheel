@@ -272,7 +272,7 @@ def _post_sync(form: dict, uploads: list[Path], out_mp4: Path, base_url: str, ti
     mime = {".mp4": "video/mp4", ".png": "image/png", ".jpg": "image/jpeg"}
     files, fhs = [], []
     try:
-        for p in uploads:
+        for p in map(Path, uploads):                 # chained first frames arrive as str paths
             fh = open(p, "rb")
             fhs.append(fh)
             files.append(("input_references", (p.name, fh, mime.get(p.suffix, "application/octet-stream"))))
