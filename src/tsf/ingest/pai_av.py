@@ -241,12 +241,15 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
     cands = cands[:max_actors]
     # lane topology from the lateral distribution (lane index relative to the ego lane, + = left)
     same = [np.median(np.round((_sample(tr, tr.t)[:, 1] - ego_d0) / W)) for _, tr, dh in cands if dh < math.pi / 4]
-    opp = [np.median(np.round((_sample(tr, tr.t)[:, 1] - ego_d0) / W)) for _, tr, dh in cands if dh > 3 * math.pi / 4]
+    # oncoming lanes are anchored at the nearest oncoming vehicle (a median, if any, is compressed away)
+    opp_d = [float(np.median(_sample(tr, tr.t)[:, 1] - ego_d0)) for _, tr, dh in cands if dh > 3 * math.pi / 4]
+    opp_d0 = min(opp_d) if opp_d else 0.0
+    opp = [int(np.round((x - opp_d0) / W)) + 1 for x in opp_d]
     ego_k = np.round((ego_sd[i0:, 1] - ego_d0) / W)
     n_left = int(max([0] + [k for k in same if k > 0] + list(ego_k[ego_k > 0])))
     n_right = int(max([0] + [-k for k in same if k < 0] + list(-ego_k[ego_k < 0])))
     n_fwd = min(6, n_left + n_right + 1)
-    n_bwd = int(min(6, max([0] + [k - n_left for k in opp if k > n_left])))
+    n_bwd = int(min(6, max([0] + opp)))
     ego_lane = n_left + 1
     s_off = ref.back                                  # road s = reference s + back
     actors, actions = [], []
@@ -271,7 +274,7 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
         if dh > 3 * math.pi / 4:                              # oncoming: backward lanes, s runs from the road end
             if n_bwd == 0:
                 continue
-            k = int(np.clip(np.median(np.round(sd[:, 1] / W)) - n_left, 1, n_bwd))
+            k = int(np.clip(np.round((np.median(sd[:, 1]) - opp_d0) / W) + 1, 1, n_bwd))
             s_gt = L - s_fwd
             s0 = s_gt[0] - abs(v[0]) * (ts[0] - t0)          # back-extrapolate late appearances to t0
             init = {"road": 0, "direction": "backward", "lane": k, "s": round(float(np.clip(s0, 1, L - 1)), 2)}
