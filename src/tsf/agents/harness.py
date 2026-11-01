@@ -11,13 +11,15 @@ Only entries whose evidence shows a verifier-score gain are `active` (Harness² 
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3] / "harness"
+# live (evolving) harness state; defaults to the versioned copy in the repo
+ROOT = Path(os.environ.get("TSF_HARNESS", Path(__file__).resolve().parents[3] / "harness"))
 
 _SYN = {"intersection": "junction", "crossing": "junction", "crossroad": "junction", "traffic": "signal",
         "light": "signal", "lights": "signal", "signalized": "signal", "motorway": "highway", "freeway": "highway",
