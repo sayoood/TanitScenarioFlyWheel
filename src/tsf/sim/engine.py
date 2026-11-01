@@ -518,6 +518,9 @@ class TanitSim:
             if ag.braking is not None:
                 acc = -ag.braking
             acc = max(min(acc, ag.a_max), -9.0)
+            # jerk limits: braking may build up fast (30 m/s3), everything else is smooth (6 m/s3)
+            j_up = 30.0 if acc < ag.a and acc < -1.0 else 6.0
+            acc = min(max(acc, ag.a - j_up * dt), ag.a + 6.0 * dt)
             ag.a = acc
             ag.v = max(0.0, ag.v + acc * dt)
             ag.p += ag.v * dt

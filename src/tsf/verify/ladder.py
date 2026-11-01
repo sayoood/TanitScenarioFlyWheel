@@ -177,7 +177,7 @@ def l3_assertions(sc: Scenario, log) -> list[Finding]:
             ok = mt["min_ttc"] is None or mt["min_ttc"] >= a.value
             msg = "" if ok else f"min TTC {mt['min_ttc']} s with {mt['min_ttc_actor']} < {a.value} s"
         elif k == "ego_lane_change":
-            want = int(a.value or 1)
+            want = int(a.value) if a.value is not None else 1
             ok = mt["ego_lane_changes_left"] == want
             msg = "" if ok else f"ego net lane changes to the left = {mt['ego_lane_changes_left']}, expected {want}"
         elif k == "ego_turn":
