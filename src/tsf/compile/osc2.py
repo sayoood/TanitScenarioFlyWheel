@@ -30,8 +30,11 @@ def _wait(trig) -> str:
         return f"wait @{ev}{delay}"
     if k == "distance_to_actor":
         op = "<" if trig.rule == "less" else ">"
-        return f"wait rise({trig.actor}.get_distance(object: {trig.other}, freespace: {str(trig.freespace).lower()}) " \
-               f"{op} {_q(trig.distance, 'm')})"
+        if trig.mode == "euclidean":
+            expr = f"{trig.actor}.get_distance(object: {trig.other}, freespace: {str(trig.freespace).lower()})"
+        else:
+            expr = f"{trig.actor}.get_longitudinal_gap(object: {trig.other}, side: {trig.mode})"
+        return f"wait rise({expr} {op} {_q(trig.distance, 'm')})"
     if k == "ttc":
         return f"wait rise({trig.actor}.get_ttc(object: {trig.other}) < {_q(trig.ttc, 's')})"
     if k == "distance_to_stop_line":

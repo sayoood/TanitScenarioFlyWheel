@@ -287,7 +287,13 @@ class TanitSim:
         a = self.agents.get(trig.actor)
         if k == "distance_to_actor":
             b = self.agents[trig.other]
-            dist = math.hypot(a.x - b.x, a.y - b.y)
+            if trig.mode == "euclidean":
+                dist = math.hypot(a.x - b.x, a.y - b.y)
+            else:
+                lon = math.cos(b.yaw) * (a.x - b.x) + math.sin(b.yaw) * (a.y - b.y)
+                if (lon > 0) != (trig.mode == "ahead"):
+                    return False
+                dist = abs(lon)
             if trig.freespace:
                 dist -= (a.lwh[0] + b.lwh[0]) / 2
             return dist < trig.distance if trig.rule == "less" else dist > trig.distance

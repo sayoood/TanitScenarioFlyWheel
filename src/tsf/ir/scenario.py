@@ -159,12 +159,15 @@ class SimTime(_M):
 
 
 class DistanceToActor(_M):
+    """euclidean: |actor-other|; ahead/behind: signed bumper gap of `actor` ahead of / behind `other`
+    along other's heading (fires only on that side)."""
     kind: Literal["distance_to_actor"] = "distance_to_actor"
     actor: str
     other: str
-    distance: float = Field(..., gt=0)
+    distance: float = Field(..., ge=0)
     rule: Literal["less", "greater"] = "less"
     freespace: bool = True
+    mode: Literal["euclidean", "ahead", "behind"] = "euclidean"
 
 
 class TimeToCollision(_M):

@@ -52,9 +52,14 @@ def _trigger(sc: Scenario, trig, name: str):
                                  xosc.StoryboardElementStateCondition(xosc.StoryboardElementType.action,
                                                                       trig.action_id, state))
     if k == "distance_to_actor":
-        cond = xosc.RelativeDistanceCondition(
-            trig.distance, xosc.Rule.lessThan if trig.rule == "less" else xosc.Rule.greaterThan,
-            xosc.RelativeDistanceType.euclidianDistance, trig.other, freespace=trig.freespace)
+        rule = xosc.Rule.lessThan if trig.rule == "less" else xosc.Rule.greaterThan
+        if trig.mode == "euclidean":
+            cond = xosc.RelativeDistanceCondition(trig.distance, rule, xosc.RelativeDistanceType.euclidianDistance,
+                                                  trig.other, freespace=trig.freespace)
+        else:  # signed: OSC 1.3 RelativeClearanceCondition-free form = longitudinal distance in other's frame
+            cond = xosc.RelativeDistanceCondition(trig.distance, rule, xosc.RelativeDistanceType.longitudinal,
+                                                  trig.other, freespace=trig.freespace,
+                                                  coordinate_system=xosc.CoordinateSystem.entity)
         return xosc.EntityTrigger(name, 0, edge, cond, trig.actor)
     if k == "ttc":
         cond = xosc.TimeToCollisionCondition(trig.ttc, xosc.Rule.lessThan, entity=trig.other, freespace=True)
