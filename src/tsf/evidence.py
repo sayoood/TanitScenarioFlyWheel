@@ -27,7 +27,7 @@ REPO = Path(__file__).resolve().parents[2]
 RUNS = REPO / "runs" / "api"
 OUT = REPO / "runs" / "evidence"
 ABLATION = Path.home() / "tsf/dev/ablation"
-SIZE = (960, 540)
+SIZE = (960, 544)                                   # multiple of 16 for the encoder
 
 
 def _ffmpeg() -> str:
