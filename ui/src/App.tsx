@@ -12,6 +12,7 @@ const Runs = lazy(() => import("./pages/Runs"));
 const RunDetailPage = lazy(() => import("./pages/RunDetail"));
 const Harness = lazy(() => import("./pages/Harness"));
 const Kpis = lazy(() => import("./pages/Kpis"));
+const Evidence = lazy(() => import("./pages/Evidence"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
 
 function NotFound() {
@@ -35,6 +36,7 @@ export function App() {
             <Route path="runs" element={<Runs />} />
             <Route path="runs/:id" element={<RunDetailPage />} />
             <Route path="harness" element={<Harness />} />
+            <Route path="evidence" element={<Evidence />} />
             <Route path="kpis" element={<Kpis />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFound />} />

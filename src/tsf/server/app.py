@@ -174,6 +174,26 @@ def get_scene(rid: str):
     return FileResponse(p, media_type="application/json")
 
 
+@app.get("/api/evidence")
+def evidence():
+    """Evidence videos of positive results (tsf.evidence index); dataset-derived ones never leave thor3."""
+    from tsf.evidence import OUT
+    p = OUT / "index.json"
+    items = json.loads(p.read_text()) if p.exists() else []
+    for it in items:
+        it["file"] = str(Path(it.pop("video")).resolve().relative_to(OUT.resolve())).replace("\\", "/")
+    return items
+
+
+@app.get("/api/evidence/files/{path:path}")
+def evidence_file(path: str):
+    from tsf.evidence import OUT
+    p = (OUT / path).resolve()
+    if OUT.resolve() not in p.parents or not p.is_file():
+        raise HTTPException(404, path)
+    return FileResponse(p, media_type="video/mp4")
+
+
 @app.get("/api/examples")
 def examples():
     return [{"name": p.stem, "title": json.loads(p.read_text())["meta"]["title"]}

@@ -9,6 +9,19 @@
 /** A NEGATIVE real-world incident available for UC3 (titles only; records stay on the Thor). */
 export type IncidentRef = { incident_id: string; title: string; has_cf_positive: boolean };
 
+/** Evidence video of a positive result (tsf.evidence). `public: false` = derived from a dataset or incident; served from the Thor only. */
+export interface EvidenceItem {
+  kind: "uc5" | "uc3" | "uc2" | "closed_loop" | "ablation";
+  file: string;
+  public: boolean;
+  run?: string;
+  source?: string;
+  query?: string;
+  q?: number;
+  rep?: number;
+  split?: string;
+}
+
 export interface ThorHealth {
   host: string;
   mem_total_gb: number;

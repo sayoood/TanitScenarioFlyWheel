@@ -22,7 +22,7 @@ import type {
   Scene,
   Stage,
   StageName,
-  UseCaseId, IncidentRef } from "../types";
+  UseCaseId, IncidentRef, EvidenceItem } from "../types";
 import { makeOsc2, makePackage, makeTsir, makeXodr, makeXosc } from "./code";
 import { makeConfig, makeHarness, makeKpis } from "./data";
 import { buildRun, hashStr, mulberry32, type PlannedStage } from "./runs";
@@ -383,6 +383,14 @@ export class MockApi implements FlywheelApi {
       { incident_id: "imdad:inc_000187", title: "Late braking before a junction, rear-end contact", has_cf_positive: true },
       { incident_id: "imdad:inc_000302", title: "Pedestrian conflict at an unsignalized crossing", has_cf_positive: false },
     ];
+  }
+
+  async listEvidence(): Promise<EvidenceItem[]> {
+    return [];
+  }
+
+  evidenceUrl(file: string): string {
+    return file;
   }
 
   async getConfig(): Promise<PipelineConfig> {

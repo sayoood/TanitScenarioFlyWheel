@@ -68,6 +68,12 @@ export function useIncidents() {
   return useQuery({ queryKey: key("incidents"), queryFn: () => api.listIncidents(), staleTime: 300_000 });
 }
 
+export function useEvidence() {
+  const { api } = useApi();
+  const key = useKey();
+  return useQuery({ queryKey: key("evidence"), queryFn: () => api.listEvidence(), refetchInterval: 60_000 });
+}
+
 export function useConfig() {
   const { api } = useApi();
   const key = useKey();

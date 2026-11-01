@@ -4,6 +4,7 @@ import {
   Boxes,
   Brain,
   Clapperboard,
+  Film,
   FlaskConical,
   LayoutDashboard,
   Settings as SettingsIcon,
@@ -24,6 +25,7 @@ const NAV = [
   { to: "/studio", label: "Studio", icon: Clapperboard },
   { to: "/runs", label: "Runs", icon: Boxes },
   { to: "/harness", label: "Harness", icon: Brain },
+  { to: "/evidence", label: "Evidence", icon: Film },
   { to: "/kpis", label: "KPIs", icon: Activity },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];

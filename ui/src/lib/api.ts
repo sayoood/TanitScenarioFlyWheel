@@ -10,7 +10,7 @@ import type {
   PipelineConfig,
   RunDetail,
   RunSummary,
-  Scene, IncidentRef } from "./types";
+  Scene, IncidentRef, EvidenceItem } from "./types";
 
 export type ApiKind = "live" | "mock";
 
@@ -32,6 +32,9 @@ export interface FlywheelApi {
   getKpis(): Promise<Kpis>;
   getConfig(): Promise<PipelineConfig>;
   listIncidents(): Promise<IncidentRef[]>;
+  listEvidence(): Promise<EvidenceItem[]>;
+  /** Absolute URL of an evidence video. */
+  evidenceUrl(file: string): string;
   putConfig(cfg: PipelineConfig): Promise<PipelineConfig | void>;
   /** Subscribe to live events (WS /api/events). Returns an unsubscribe function. */
   subscribe(handler: (e: FlywheelEvent) => void, onState?: (connected: boolean) => void): () => void;

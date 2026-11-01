@@ -11,7 +11,7 @@ import type {
   PipelineConfig,
   RunDetail,
   RunSummary,
-  Scene, IncidentRef } from "./types";
+  Scene, IncidentRef, EvidenceItem } from "./types";
 
 export const normalizeBase = (b: string): string => b.trim().replace(/\/+$/, "");
 
@@ -78,6 +78,8 @@ export class LiveApi implements FlywheelApi {
   getKpis = () => this.req<Kpis>("/api/kpis");
   getConfig = () => this.req<PipelineConfig>("/api/config");
   listIncidents = () => this.req<IncidentRef[]>("/api/incidents");
+  listEvidence = () => this.req<EvidenceItem[]>("/api/evidence");
+  evidenceUrl = (file: string) => this.url(`/api/evidence/files/${file.split("/").map(encodeURIComponent).join("/")}`);
   putConfig = (cfg: PipelineConfig) => this.req<PipelineConfig | void>("/api/config", { method: "PUT", body: JSON.stringify(cfg) });
 
   subscribe(handler: (e: FlywheelEvent) => void, onState?: (connected: boolean) => void): () => void {
