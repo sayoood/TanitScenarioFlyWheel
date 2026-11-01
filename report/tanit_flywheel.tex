@@ -345,6 +345,31 @@ cross left/right 120$^\circ$, rear left/right 70$^\circ$, rear tele 30$^\circ$; 
 generates photorealistic, cross-view-consistent video (and LiDAR) from these controls plus a text prompt
 that carries the appearance parameters.
 
+\paragraph{On the Thor.} Both Cosmos3-Nano Auto models run on Thor (sm\_110) through vLLM-Omni's videos
+API. One Cosmos server runs at a time, next to the resident Qwen server, inside 122\,GB of unified memory.
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item \emph{KV-ring patch.} The stock Sim-Auto pipeline always sizes its autoregressive KV ring for seven
+  views plus LiDAR (27\,GB) and refuses to start next to the LLM. We added a server-side view budget, which
+  needs about 4\,GB for one view and 7.6\,GB for three.
+\item \emph{Captions.} WSM controls carry geometry only. Time of day, weather, surface and setting come from
+  per-camera captions in the training style (timestamped blocks, 300--400 words). The Qwen captioner writes
+  them from the TSIR, with augmentation appearance overrides.
+\end{itemize}
+\Cref{fig:cosmos} shows the control fidelity. The blue cuboid becomes a blue van at the same place in
+cross-right, traffic-signal markers become signal heads, and the cut-in cuboid becomes the red car.
+Sim-Auto shows no visible drift over 297 frames. Chained 49-frame chunks, each conditioned on the previous
+chunk's last frame, join without seams. Captions must come from the scenario, not a template: a template
+phrase ("blue car ahead in left lane") made the model add a car that is not in the control.
+
+\begin{figure}[h]\centering
+\IfFileExists{figs/cosmos_uc1_sim3.jpg}{\includegraphics[width=\linewidth]{figs/cosmos_uc1_sim3.jpg}}{}\\[2pt]
+\IfFileExists{figs/cosmos_hw_ctl.jpg}{\includegraphics[width=0.49\linewidth]{figs/cosmos_hw_ctl.jpg}}{}\hfill
+\IfFileExists{figs/cosmos_hw_gen.jpg}{\includegraphics[width=0.49\linewidth]{figs/cosmos_hw_gen.jpg}}{}
+\caption{Top: UC1 left turn, TanitSim $\to$ WSM controls (upper row) $\to$ Cosmos3-Nano-Sim-Auto (lower row),
+front-wide, cross-right and cross-left at 480p, frame 76/97. Bottom: double cut-in on the highway, WSM control
+(left) and Cosmos3-Nano-Transfer-Auto (right, 35 steps). Synthetic scenarios only.}\label{fig:cosmos}
+\end{figure}
+
 \ResultsCosmos
 
 %=====================================================================================================
