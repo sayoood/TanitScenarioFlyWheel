@@ -384,6 +384,22 @@ writes only an \emph{ego plan} that is spliced into a copy of the negative, so e
 behaviour by construction; the positive must pass relative criteria (no collision, peak deceleration below
 $0.75\times$ the negative's, TTC $\geq$ 2\,s).
 
+\paragraph{Fidelity diagnosis.} Re-simulating every clip in the dataset exposed three systematic causes of large
+ego errors. Each was fixed at the root, and \cref{tab:batch} reports the batch before and after the fixes.
+\begin{enumerate}[leftmargin=1.4em,itemsep=0pt]
+\item \emph{Speed-basis mismatch.} The initial speed came from $|v|$, but the profile came from the s-rate
+  $\dot s$ along the low-passed reference. A lane at lateral offset $d$ on curvature $\kappa$ has a different
+  length, so both now use $v_\text{lane} = \dot s\,(1-\kappa d)$. That is exactly what the simulated actor
+  integrates along its lane.
+\item \emph{IDM free-road creep.} The $(v/v_0)^4$ term approaches a commanded speed only asymptotically, so
+  every \texttt{speed\_change} arrived late. On a free road a saturating P-controller ($\tau = 0.6$\,s) now
+  reaches the target at the commanded rate, which matches OpenSCENARIO's linear \texttt{SpeedAction}. The
+  IDM/CAH interaction term is unchanged.
+\item \emph{Narrow-road squeeze.} Queued or parked oncoming cars were placed at their lane centre, so the
+  re-simulated ego stopped behind a gap the real car had squeezed through. Oncoming vehicles now keep their
+  lateral offset from the lane centre; a median is still compressed away.
+\end{enumerate}
+
 \ResultsUCfourfive
 
 %=====================================================================================================
