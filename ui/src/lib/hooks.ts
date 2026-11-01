@@ -62,6 +62,12 @@ export function useKpis() {
   return useQuery({ queryKey: key("kpis"), queryFn: () => api.getKpis(), refetchInterval: 60_000 });
 }
 
+export function useIncidents() {
+  const { api } = useApi();
+  const key = useKey();
+  return useQuery({ queryKey: key("incidents"), queryFn: () => api.listIncidents(), staleTime: 300_000 });
+}
+
 export function useConfig() {
   const { api } = useApi();
   const key = useKey();

@@ -6,6 +6,9 @@
  */
 
 // ----------------------------------------------------------------------------- health
+/** A NEGATIVE real-world incident available for UC3 (titles only; records stay on the Thor). */
+export type IncidentRef = { incident_id: string; title: string; has_cf_positive: boolean };
+
 export interface ThorHealth {
   host: string;
   mem_total_gb: number;

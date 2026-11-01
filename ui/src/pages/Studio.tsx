@@ -6,7 +6,7 @@ import clsx from "clsx";
 import { CodeBlock } from "../components/run/CodeBlock";
 import { Chip, Field, PageHeader, Panel, Segmented, Slider, Toggle } from "../components/ui/primitives";
 import { duration } from "../lib/format";
-import { useConfig, useCreateRun, useKpis } from "../lib/hooks";
+import { useConfig, useCreateRun, useIncidents, useKpis } from "../lib/hooks";
 import { AUGMENT_STRATEGIES, POLICIES, RESOLUTIONS, UC1_EXAMPLES, UC_EXAMPLE_INPUTS, USE_CASES } from "../lib/meta";
 import { useSettings } from "../lib/settings";
 import { CAMERA_NAMES } from "../lib/types";
@@ -60,6 +60,12 @@ export default function Studio() {
 
   const [uc, setUc] = useState<UseCaseId>("uc1");
   const [query, setQuery] = useState(UC1_EXAMPLES[0]);
+  const incidents = useIncidents();
+  const incidentTitles = useMemo(
+    () => (incidents.data?.length ? Object.fromEntries(incidents.data.map((i) => [i.incident_id, i.title])) : null),
+    [incidents.data],
+  );
+  const incidentsByID: Record<string, string> = incidentTitles ?? INCIDENTS;
   const [other, setOther] = useState<Record<string, string>>({ uc2: "", uc3: "", uc4: "", uc5: "" });
 
   const [augOn, setAugOn] = useState(true);
@@ -162,13 +168,13 @@ export default function Studio() {
                     <div>
                       <div className="mb-2 text-[12.5px] font-medium text-fg-1">{uc === "uc3" ? "Recent incidents" : "Examples"}</div>
                       <div className="flex flex-wrap gap-2">
-                        {UC_EXAMPLE_INPUTS[uc].map((ex) => (
-                          <button key={ex} className="btn btn-sm mono !font-medium" title={INCIDENTS[ex]} onClick={() => setOther((o) => ({ ...o, [uc]: ex }))}>
+                        {(uc === "uc3" && incidentTitles ? Object.keys(incidentTitles) : UC_EXAMPLE_INPUTS[uc]).map((ex) => (
+                          <button key={ex} className="btn btn-sm mono !font-medium" title={incidentsByID[ex]} onClick={() => setOther((o) => ({ ...o, [uc]: ex }))}>
                             {ex}
                           </button>
                         ))}
                       </div>
-                      {uc === "uc3" && other.uc3 && INCIDENTS[other.uc3] && <p className="mt-2 text-[12.5px] text-fg-2">{INCIDENTS[other.uc3]}</p>}
+                      {uc === "uc3" && other.uc3 && incidentsByID[other.uc3] && <p className="mt-2 text-[12.5px] text-fg-2">{incidentsByID[other.uc3]}</p>}
                     </div>
                   </div>
                 )}

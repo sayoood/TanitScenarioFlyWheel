@@ -10,8 +10,7 @@ import type {
   PipelineConfig,
   RunDetail,
   RunSummary,
-  Scene,
-} from "./types";
+  Scene, IncidentRef } from "./types";
 
 export type ApiKind = "live" | "mock";
 
@@ -32,6 +31,7 @@ export interface FlywheelApi {
   setLessonStatus(id: string, status: Exclude<LessonStatus, "candidate">): Promise<Lesson | void>;
   getKpis(): Promise<Kpis>;
   getConfig(): Promise<PipelineConfig>;
+  listIncidents(): Promise<IncidentRef[]>;
   putConfig(cfg: PipelineConfig): Promise<PipelineConfig | void>;
   /** Subscribe to live events (WS /api/events). Returns an unsubscribe function. */
   subscribe(handler: (e: FlywheelEvent) => void, onState?: (connected: boolean) => void): () => void;

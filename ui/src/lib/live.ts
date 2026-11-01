@@ -11,8 +11,7 @@ import type {
   PipelineConfig,
   RunDetail,
   RunSummary,
-  Scene,
-} from "./types";
+  Scene, IncidentRef } from "./types";
 
 export const normalizeBase = (b: string): string => b.trim().replace(/\/+$/, "");
 
@@ -78,6 +77,7 @@ export class LiveApi implements FlywheelApi {
     this.req<Lesson | void>(`/api/harness/lessons/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ status }) });
   getKpis = () => this.req<Kpis>("/api/kpis");
   getConfig = () => this.req<PipelineConfig>("/api/config");
+  listIncidents = () => this.req<IncidentRef[]>("/api/incidents");
   putConfig = (cfg: PipelineConfig) => this.req<PipelineConfig | void>("/api/config", { method: "PUT", body: JSON.stringify(cfg) });
 
   subscribe(handler: (e: FlywheelEvent) => void, onState?: (connected: boolean) => void): () => void {

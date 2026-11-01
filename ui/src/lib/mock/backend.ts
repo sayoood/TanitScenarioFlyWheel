@@ -22,8 +22,7 @@ import type {
   Scene,
   Stage,
   StageName,
-  UseCaseId,
-} from "../types";
+  UseCaseId, IncidentRef } from "../types";
 import { makeOsc2, makePackage, makeTsir, makeXodr, makeXosc } from "./code";
 import { makeConfig, makeHarness, makeKpis } from "./data";
 import { buildRun, hashStr, mulberry32, type PlannedStage } from "./runs";
@@ -376,6 +375,14 @@ export class MockApi implements FlywheelApi {
 
   async getKpis(): Promise<Kpis> {
     return structuredClone(this.kpis);
+  }
+
+  async listIncidents(): Promise<IncidentRef[]> {
+    return [
+      { incident_id: "imdad:inc_000231", title: "Red-light conflict at a signalized junction (collision, NEGATIVE)", has_cf_positive: false },
+      { incident_id: "imdad:inc_000187", title: "Late braking before a junction, rear-end contact", has_cf_positive: true },
+      { incident_id: "imdad:inc_000302", title: "Pedestrian conflict at an unsignalized crossing", has_cf_positive: false },
+    ];
   }
 
   async getConfig(): Promise<PipelineConfig> {
