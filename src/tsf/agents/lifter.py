@@ -250,9 +250,11 @@ class Lifter:
                 break
             msgs = msgs + [{"role": "assistant", "content": json.dumps(raw, separators=(",", ":"))},
                            {"role": "user", "content": "The verifier rejected this TSIR:\n" + rep.diagnostics() +
-                            f"\nSimulation metrics: {json.dumps(rep.metrics)}\nFix the root cause (positions, "
-                            "timing, signal offsets, lane numbers, triggers or assertions) and output the complete "
-                            "corrected TSIR."}]
+                            f"\nSimulation metrics: {json.dumps(rep.metrics)}\nApply the hints. Make the MINIMAL "
+                            "change that fixes the root cause (positions, duration, timing, signal offsets, lane "
+                            "numbers, triggers, or an assertion that contradicts the scenario's own values); keep "
+                            "every actor and value that is not involved unchanged. Output the complete corrected "
+                            "TSIR."}]
         final = next((a for a in reversed(attempts) if a.report.passed), attempts[-1])
         stage("document", "running", "")
         narrative = self.document(query, analysis, attempts, final)
