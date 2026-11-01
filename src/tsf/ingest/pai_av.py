@@ -324,7 +324,10 @@ def fidelity(sim, log, gt: dict) -> dict:
         if aid not in log.ids:
             continue
         j = log.ids.index(aid)
-        tq = np.asarray(g["t"])
+        keep = np.asarray(g["t"]) <= log.t[-1] + 1e-6          # compare only within the simulated horizon
+        if keep.sum() < 2:
+            continue
+        tq = np.asarray(g["t"])[keep]
         sx = np.interp(tq, log.t, log.states[:, j, 0])
         sy = np.interp(tq, log.t, log.states[:, j, 1])
         d2 = (sx[:, None] - x[None]) ** 2 + (sy[:, None] - y[None]) ** 2
@@ -332,7 +335,7 @@ def fidelity(sim, log, gt: dict) -> dict:
         along = (sx - x[i]) * np.cos(h[i]) + (sy - y[i]) * np.sin(h[i])
         lat = -(sx - x[i]) * np.sin(h[i]) + (sy - y[i]) * np.cos(h[i])
         s_sim = ss[i] + along
-        s_gt = np.asarray(g["s"])
+        s_gt = np.asarray(g["s"])[keep]
         if g.get("direction") == "backward":
             s_sim = r.length - s_sim
         err = np.abs(s_sim - s_gt)
