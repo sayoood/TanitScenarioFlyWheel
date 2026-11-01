@@ -311,14 +311,20 @@ class MapArt:
                     self._arrow(img, x, y, h, t, col)
 
     def _arrow(self, img, x, y, h, turn, col):
-        shaft = np.array([(-2.6, 0), (0.6, 0)])
-        self.line(img, _local(x, y, h, shaft), col, 0.22)
+        """Road-marking arrow glyphs (~5 m long), local x = driving direction, y = left."""
+        self.line(img, _local(x, y, h, np.array([(-3.0, 0), (0.2, 0)])), col, 0.24)
         if turn == "straight":
-            head = np.array([(2.0, 0), (0.6, 0.55), (0.6, -0.55)])
+            self.line(img, _local(x, y, h, np.array([(0.2, 0), (1.2, 0)])), col, 0.24)
+            head = np.array([(2.6, 0), (1.1, 0.62), (1.1, -0.62)])
         else:
             sgn = 1 if turn == "left" else -1
-            self.line(img, _local(x, y, h, np.array([(0.6, 0), (1.2, 0.7 * sgn)])), col, 0.22)
-            head = np.array([(1.3, 1.6 * sgn), (0.55, 0.55 * sgn), (1.75, 0.45 * sgn)])
+            bend = np.array([(0.2 + 0.9 * math.sin(a), sgn * 0.9 * (1 - math.cos(a))) for a in np.linspace(0, 1.2, 8)])
+            self.line(img, _local(x, y, h, bend), col, 0.24)
+            ex, ey = bend[-1]
+            d = np.array([math.cos(1.2), sgn * math.sin(1.2)])
+            n = np.array([-d[1], d[0]])
+            tip = np.array([ex, ey]) + d * 1.3
+            head = np.array([tip, (ex, ey) + n * 0.6 - d * 0.1, (ex, ey) - n * 0.6 - d * 0.1])
         self.fill(img, _local(x, y, h, head), col)
 
     def _signs(self):
@@ -355,7 +361,7 @@ class Renderer:
         self.sim, self.log, self.W, self.H = sim, log, size[0], size[1]
         self.title = title or sim.sc.meta.title
         vmax = float(log.states[:, :, 3].max())
-        self.ppm = ppm or float(np.clip(1280 / (vmax * 6 + 60), 3.5, 12.0))
+        self.ppm = ppm or float(np.clip(1280 / (vmax * 4 + 40), 4.5, 12.0))
         S = log.states
         xs, ys = S[:, :, 0], S[:, :, 1]
         view = (self.W / self.ppm, self.H / self.ppm)
@@ -619,7 +625,7 @@ class Renderer:
         d.ellipse([14, 12, 34, 32], outline=(*ego, 255), width=3)
         d.ellipse([20, 18, 28, 26], fill=(*ego, 255))
         d.text((44, 11), "TANIT SIM", font=self.f_title, fill=(*txt, 255))
-        d.text((150, 13), self.title[:78], font=self.f_med, fill=(*dim, 255))
+        d.text((150, 13), self.title if len(self.title) <= 80 else self.title[:77] + "...", font=self.f_med, fill=(*dim, 255))
         d.text((W - 118, 12), f"t {log.t[i]:6.2f} s", font=self.f_bold, fill=(*ego, 255))
         prog = log.t[i] / max(log.t[-1], 1e-6)
         d.rectangle([0, 44, W, 47], fill=(30, 36, 44, 255))
@@ -631,7 +637,7 @@ class Renderer:
         if log.metrics.get("collision"):
             chips.append(("COLLISION", _hex(P["red"])))
         else:
-            chips.append((f"min TTC {mt if mt is not None else '∞'} s", _hex(P["green"]) if (mt or 9) > 2.5 else _hex(P["amber"])))
+            chips.append((f"min TTC {mt if mt is not None else 'none'}{' s' if mt is not None else ''}", _hex(P["green"]) if (mt or 9) > 2.5 else _hex(P["amber"])))
         arm = None
         lane = log.lanes[i][e]
         if lane and lane[0].isdigit() and int(lane[0]) in log.signals:
