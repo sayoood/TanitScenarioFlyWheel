@@ -398,7 +398,18 @@ ego errors. Each was fixed at the root, and \cref{tab:batch} reports the batch b
 \item \emph{Narrow-road squeeze.} Queued or parked oncoming cars were placed at their lane centre, so the
   re-simulated ego stopped behind a gap the real car had squeezed through. Oncoming vehicles now keep their
   lateral offset from the lane centre; a median is still compressed away.
+\item \emph{Fragmented auto-label tracks.} One oncoming car often appears as a new track every few seconds
+  (ID switches), sometimes alongside a duplicate simultaneous track. Back-extrapolating the fragments to $t_0$
+  stacked a single car onto the same spot, so the simulated cars queued behind each other at 4--7\,m/s
+  instead of 25\,m/s. Tracks are now stitched when one continues another's constant-velocity prediction
+  (gap $\le$ 1.5\,s, heading within 30$^\circ$) and merged when they duplicate it (mean distance $<$ 2\,m over
+  their overlap). The road is also extended far enough for late, fast arrivals. On the worst clip this cut
+  the NPC ADE from 61.8\,m to 0.4\,m.
 \end{enumerate}
+The remaining large NPC errors come from vehicles first observed late in dense oncoming traffic. Their
+history before the first detection is unknown, so constant-speed back-extrapolation can create IDM
+interactions that never happened. A spawn-at-first-sighting action (OpenSCENARIO \texttt{AddEntityAction})
+is the principled fix.
 
 \ResultsUCfourfive
 

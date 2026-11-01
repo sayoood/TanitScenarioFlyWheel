@@ -99,7 +99,7 @@ def uc45(runs: list[dict], batch: dict | None, batch_v1: dict | None = None) -> 
     if batch:
         vers = ([("before fixes", batch_v1)] if batch_v1 else []) + [("after fixes" if batch_v1 else "current", batch)]
         t += "\n" + table("Dataset-level lifting over all PhysicalAI-AV clips with obstacle labels (3 chunks). "
-                          "``after fixes'': lane-consistent speeds, free-road speed control at the commanded rate, "
+                          "``after fixes'': lane-consistent speeds, free-road speed control at the commanded rate, track stitching, "
                           "lateral offsets of queued oncoming vehicles.",
                           "tab:batch", "lrrrrrrrr", ["version", "clips", "lifted", "1st-pass", "consistent", "ego ADE",
                                                       "ego FDE", "NPC ADE", "p90 NPC"],
