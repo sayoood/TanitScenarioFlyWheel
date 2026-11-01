@@ -111,6 +111,11 @@ class DynEnv(BaseModel):
     description: str
 
 
+class StaticElement(BaseModel):
+    element: str
+    description: str
+
+
 class CodeBeamer(BaseModel):
     shortScenarioDescription: ShortDesc
     scenarioCategory: str
@@ -118,7 +123,7 @@ class CodeBeamer(BaseModel):
     finalStates: list[FinalState]
     environmentConditions: dict[str, Scalar]
     roadDescription: dict[str, Scalar]
-    staticEnvironment: list[str]
+    staticEnvironment: list[StaticElement]
     dynamicEnvironment: list[DynEnv]
     events: list[EventDesc]
     behaviorSequence: BehaviorSequence
@@ -196,8 +201,8 @@ class Lifter:
         self.h = harness or Harness("lifter")
         self._tsir_schema = json_schema()
 
-    def _skills_block(self) -> str:
-        sk = self.h.skills(self.h.knobs()["n_skills"])
+    def _skills_block(self, query: str = "") -> str:
+        sk = self.h.skills(self.h.knobs()["n_skills"], query)
         return "\n\n".join(f"Example description:\n{s['meta']['description']}\nExample TSIR:\n"
                            f"{json.dumps(s, separators=(',', ':'))}" for s in sk)
 
@@ -212,7 +217,7 @@ class Lifter:
 
     def propose(self, query: str, analysis: dict, sid: str) -> list[dict]:
         sys = self.h.system(query)
-        user = (f"{self._skills_block()}\n\nNow write the TSIR for this request. Use meta.id = \"{sid}\".\n"
+        user = (f"{self._skills_block(query)}\n\nNow write the TSIR for this request. Use meta.id = \"{sid}\".\n"
                 f"Request:\n{query}\n\nEngineering analysis (quantified assumptions to use):\n"
                 f"{json.dumps(analysis, separators=(',', ':'))}")
         return [{"role": "system", "content": sys}, {"role": "user", "content": user}]

@@ -19,6 +19,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3] / "harness"
 
+_SYN = {"intersection": "junction", "crossing": "junction", "crossroad": "junction", "traffic": "signal",
+        "light": "signal", "lights": "signal", "signalized": "signal", "motorway": "highway", "freeway": "highway",
+        "autobahn": "highway", "expressway": "highway", "linear": "highway", "merge": "cut", "cuts": "cut"}
+
+
+def _terms(text: str) -> set[str]:
+    return {_SYN.get(w, w) for w in re.findall(r"[a-z]+", text.lower()) if len(w) > 2}
+
+
 DEFAULT_KNOBS = {"thinking": False, "temperature": 0.3, "max_repairs": 3, "n_skills": 1, "n_lessons": 6}
 
 
@@ -47,11 +56,15 @@ class Harness:
         p = self.dir / "knobs.json"
         return {**DEFAULT_KNOBS, **(json.loads(p.read_text()) if p.exists() else {})}
 
-    def skills(self, n: int) -> list[dict]:
-        out = []
-        for p in sorted((self.dir / "skills").glob("*.json"))[:n]:
-            out.append(json.loads(p.read_text(encoding="utf-8")))
-        return out
+    def skills(self, n: int, text: str = "") -> list[dict]:
+        """Verified exemplars, most relevant to `text` first (term overlap incl. road-type synonyms)."""
+        docs = [json.loads(p.read_text(encoding="utf-8")) for p in sorted((self.dir / "skills").glob("*.json"))]
+        if text:
+            q = _terms(text)
+            docs.sort(key=lambda d: -len(q & _terms(" ".join([d["meta"]["title"], d["meta"]["description"],
+                                                              " ".join(d["meta"].get("tags", [])),
+                                                              d["road"]["type"]]))))
+        return docs[:n]
 
     # ---------------------------------------------------------------- experience library
     def _lessons_path(self) -> Path:
