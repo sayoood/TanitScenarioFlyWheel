@@ -278,6 +278,14 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
             s_gt = L - s_fwd
             s0 = s_gt[0] - abs(v[0]) * (ts[0] - t0)          # back-extrapolate late appearances to t0
             init = {"road": 0, "direction": "backward", "lane": k, "s": round(float(np.clip(s0, 1, L - 1)), 2)}
+            # lane centre in the ego frame; a median (opp_d0 beyond the first lane) stays compressed, a narrow
+            # road does not, so queued/parked oncoming cars keep the real gap the ego squeezes through
+            centre = (n_left + k) * W + max(0.0, opp_d0 - (n_left + 1) * W)
+            off = -(sd[:, 1] - centre)                            # + = left of the actor's own heading
+            if np.abs(v).max() < 0.8:
+                init["t_offset"] = round(float(np.clip(off.mean(), -2.5, 2.5)), 2)
+            elif abs(np.median(off[:10])) > 0.4:
+                init["t_offset"] = round(float(np.clip(np.median(off[:10]), -2.5, 2.5)), 2)
             speed = abs(float(np.median(v[:5])))
             acts = speed_actions(aid, ts, np.abs(v), t0)
         else:
