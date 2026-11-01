@@ -33,7 +33,7 @@ from pathlib import Path
 
 from tsf.agents.evolve import PROBES
 from tsf.agents.harness import Harness
-from tsf.agents.lifter import Lifter, _slug
+from tsf.agents.lifter import SCHEMA_SYSTEM, Lifter, _slug
 from tsf.agents.llm import LLM
 from tsf.verify import ladder
 
@@ -194,8 +194,7 @@ def score_intent(checks, tsir: dict, m: dict | None) -> tuple[float, list[str]]:
 
 
 # ----------------------------------------------------------------------------- conditions
-BARE = ("You are an expert in automated-driving test scenario design. Write the requested scenario as a TSIR JSON "
-        "document (the JSON schema is enforced by the decoder).")
+BARE = SCHEMA_SYSTEM                  # condition A/G prompt, now the production default (lifter.SCHEMA_SYSTEM)
 
 
 def _row(cond, qi, rep_i, att, checks, t_s, st):

@@ -2,7 +2,9 @@
 
 Flow (every step logged):
   1. Analyst      : NL -> analysisOfUserQuery, plan, assumptions, maths (schema-constrained)
-  2. Proposer     : analysis -> TSIR (constrained by the TSIR JSON schema)   = firstHypothesis
+  2. Proposer     : request + TSIR schema in the system prompt -> TSIR       = firstHypothesis
+                    (lift_mode "schema_repair", default; the analysis runs concurrently and feeds the package)
+                    or analysis + harness prompt + skills -> TSIR             (lift_mode "agentic")
   3. Verifier     : ladder L0-L3 (compile, XSD/QC, lane-graph cross-check, simulation oracle)
   4. Repairer     : diagnostics -> revised TSIR, up to `max_repairs`         = improvements
   5. Documenter   : codeBeamer description, functional requirements, variations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -195,6 +198,10 @@ def _slug(text: str, n: int = 48) -> str:
 
 
 # ----------------------------------------------------------------------------- agent
+SCHEMA_SYSTEM = ("You are an expert in automated-driving test scenario design. Write the requested scenario as a TSIR "
+                 "JSON document (the JSON schema is enforced by the decoder).")
+
+
 class Lifter:
     def __init__(self, llm: LLM | None = None, harness: Harness | None = None):
         self.llm = llm or LLM()
@@ -222,8 +229,18 @@ class Lifter:
                 f"{json.dumps(analysis, separators=(',', ':'))}")
         return [{"role": "system", "content": sys}, {"role": "user", "content": user}]
 
-    def lift(self, query: str, workdir: str | Path, sid: str | None = None, on_stage=None) -> LiftResult:
-        """`on_stage(name, status, detail)` is called at every stage transition (UI / event stream)."""
+    def schema_prompt(self, query: str, sid: str) -> list[dict]:
+        schema = "\n\nTSIR JSON schema:\n" + json.dumps(self._tsir_schema, separators=(",", ":"))
+        return [{"role": "system", "content": SCHEMA_SYSTEM + schema},
+                {"role": "user", "content": f"Use meta.id = \"{sid}\".\nRequest:\n{query}"}]
+
+    def lift(self, query: str, workdir: str | Path, sid: str | None = None, on_stage=None,
+             mode: str | None = None) -> LiftResult:
+        """`on_stage(name, status, detail)` is called at every stage transition (UI / event stream).
+
+        mode "schema_repair" (default): ablation round 2 (12 queries x 2 reps) measured 0.79 intent-correct for
+        schema-prompted one-shot + verifier repair against 0.67 for the agentic analyse -> propose path, at a third
+        of the latency and half the tokens; the analysis is still produced (concurrently) for the package."""
         stage = on_stage or (lambda *a: None)
         t0 = time.perf_counter()
         wd = Path(workdir)
@@ -231,9 +248,16 @@ class Lifter:
         k = self.h.knobs()
         sid = sid or _slug(query)
         stage("analyse", "running", "")
-        analysis = self.analyse(query)
-        stage("analyse", "ok", "")
-        attempts = self.iterate(self.propose(query, analysis, sid), sid, wd, k["max_repairs"], stage=stage)
+        if (mode or k["lift_mode"]) == "schema_repair":
+            with ThreadPoolExecutor(1) as ex:
+                fut = ex.submit(self.analyse, query)
+                attempts = self.iterate(self.schema_prompt(query, sid), sid, wd, k["max_repairs"], stage=stage)
+                analysis = fut.result()
+            stage("analyse", "ok", "")
+        else:
+            analysis = self.analyse(query)
+            stage("analyse", "ok", "")
+            attempts = self.iterate(self.propose(query, analysis, sid), sid, wd, k["max_repairs"], stage=stage)
         final = next((a for a in reversed(attempts) if a.report.passed), attempts[-1])
         stage("document", "running", "")
         narrative = self.document(query, analysis, attempts, final)

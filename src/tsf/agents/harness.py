@@ -30,7 +30,8 @@ def _terms(text: str) -> set[str]:
     return {_SYN.get(w, w) for w in re.findall(r"[a-z]+", text.lower()) if len(w) > 2}
 
 
-DEFAULT_KNOBS = {"thinking": False, "temperature": 0.3, "max_repairs": 3, "n_skills": 1, "n_lessons": 6}
+DEFAULT_KNOBS = {"thinking": False, "temperature": 0.3, "max_repairs": 3, "n_skills": 1, "n_lessons": 6,
+                "lift_mode": "schema_repair"}
 
 
 @dataclass
