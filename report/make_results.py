@@ -16,7 +16,7 @@ def _runs(root: Path) -> list[dict]:
     out = []
     for p in sorted(root.glob("*/run.json")):
         try:
-            out.append(json.loads(p.read_text()))
+            out.append({**json.loads(p.read_text()), "_dir": str(p.parent)})
         except json.JSONDecodeError:
             continue
     return out
@@ -49,7 +49,7 @@ def table(caption: str, label: str, cols: str, head: list[str], rows: list[list]
 
 
 def uc1(runs: list[dict]) -> str:
-    q = [r for r in runs if r["uc"] == "uc1" and r["input"].get("query") and r["status"] in ("ok", "failed")]
+    q = [r for r in _latest(runs, ("uc1",)) if r["input"].get("query")]
     rows = []
     for r in q:
         k = r.get("kpis") or {}
@@ -75,7 +75,7 @@ def uc1(runs: list[dict]) -> str:
 
 
 def uc3(runs: list[dict]) -> str:
-    q = [r for r in runs if r["uc"] == "uc3" and r["status"] in ("ok", "failed")]
+    q = _latest(runs, ("uc3",))
     rows = [[r["input"]["incident_id"], (r.get("kpis") or {}).get("first_pass_score"),
              (r.get("kpis") or {}).get("final_valid"), (r.get("kpis") or {}).get("repairs"),
              (r.get("kpis") or {}).get("twin_valid"), (r.get("kpis") or {}).get("package_valid"), r.get("seconds")]
@@ -84,8 +84,36 @@ def uc3(runs: list[dict]) -> str:
                  ["incident", "1st score", "TSIR valid", "rep.", "twin v2 valid", "pkg", "total s"], rows)
 
 
-def uc45(runs: list[dict], batch: dict | None, batch_v1: dict | None = None) -> str:
-    q = [r for r in runs if r["uc"] in ("uc4", "uc5") and r["status"] in ("ok", "failed")]
+def _latest(runs: list[dict], ucs: tuple[str, ...]) -> list[dict]:
+    """Newest finished run per (use case, input); run dirs sort by creation time, so later ones win."""
+    out: dict[tuple, dict] = {}
+    for r in runs:
+        if r["uc"] in ucs and r["status"] in ("ok", "failed"):
+            out[(r["uc"], json.dumps(r["input"], sort_keys=True))] = r
+    return list(out.values())
+
+
+def uc2(runs: list[dict]) -> str:
+    rows = []
+    for r in _latest(runs, ("uc2",)):
+        k, e = r.get("kpis") or {}, (r.get("uc2") or {}).get("ego") or {}
+        st = sorted((Path(r["_dir"]) / "uc2" / "vipe").glob("w*/stats.json"))
+        h = [(json.loads(p.read_text()).get("camera_height") or {}).get("median_m") for p in st]
+        h = [x for x in h if x]
+        rows.append([r["input"]["video"].split(":")[1], e.get("duration_s"), sum(h) / len(h) if h else None,
+                     e.get("distance_m"), max(e.get("speed_kmh_per_s") or [0]), k.get("uc2_speed_mae_kmh"),
+                     k.get("final_valid"), k.get("repairs"), k.get("package_valid"), k.get("epdms")])
+    return table("UC2 on three CC-BY dash-cam clips without ego-motion data: ViPE ego track (15 fps, 480p, 20 s "
+                 "windows), validity of the lifted scenario and how closely the simulated ego follows the measured "
+                 "speed.", "tab:uc2", "lrrrrrcccr",
+                 ["clip", "s", "cam.~h m", "dist. m", "peak km/h", "speed MAE km/h", "valid", "rep.", "pkg", "EPDMS"],
+                 rows, r"Clips by YouTube user a62dave under the Creative Commons Attribution licence: "
+                       r"youtu.be/amuldGGgNc4, youtu.be/dToIIqqvSt0, youtu.be/qdAI\_quNcqw. Video, frames and every "
+                       r"derivative stay on the Thor; only these aggregate numbers are published.")
+
+
+def uc45(runs: list[dict], batches: list[tuple[str, dict]]) -> str:
+    q = _latest(runs, ("uc4", "uc5"))
     rows = []
     for r in q:
         k = r.get("kpis") or {}
@@ -96,16 +124,17 @@ def uc45(runs: list[dict], batch: dict | None, batch_v1: dict | None = None) -> 
               "log, m); UC5 negative vs. positive twin peak deceleration (m/s$^2$) and jerk (m/s$^3$).", "tab:uc45",
               "llrrrrrrrcr", ["UC", "clip", "lift s", "ego ADE", "NPC ADE", "dec$^-$", "dec$^+$", "jerk$^-$",
                               "jerk$^+$", "pkg", "EPDMS"], rows)
-    if batch:
-        vers = ([("before fixes", batch_v1)] if batch_v1 else []) + [("after fixes" if batch_v1 else "current", batch)]
-        t += "\n" + table("Dataset-level lifting over all PhysicalAI-AV clips with obstacle labels (3 chunks). "
-                          "``after fixes'': lane-consistent speeds, free-road speed control at the commanded rate, track stitching, "
-                          "lateral offsets of queued oncoming vehicles.",
+    if batches:
+        batch = batches[-1][1]
+        t += "\n" + table("Dataset-level lifting over all PhysicalAI-AV clips with obstacle labels. v1: first lifter; "
+                          "v3: lane-consistent speeds, free-road speed control at the commanded rate, track stitching, "
+                          "lateral offsets of queued oncoming vehicles; v4: the 6-lane window is trimmed on the side "
+                          "with fewer vehicles, and vehicles outside it are dropped instead of clamped into the edge lane.",
                           "tab:batch", "lrrrrrrrr", ["version", "clips", "lifted", "1st-pass", "consistent", "ego ADE",
                                                       "ego FDE", "NPC ADE", "p90 NPC"],
                           [[v, b["clips"], b["lifted"], b["first_pass_rate"], b["consistent_rate"],
                             b["median_ego_ade_s"], b["median_ego_fde_s"], b["median_npc_ade_s"],
-                            b.get("p90_npc_ade_s")] for v, b in vers],
+                            b.get("p90_npc_ade_s")] for v, b in batches],
                           "Medians over clips (m); 15 s windows; seconds per clip (median) "
                           f"{batch.get('median_seconds')}.")
     return t
@@ -224,19 +253,19 @@ def main():
     ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "results.tex"))
     a = ap.parse_args()
     runs = _runs(Path(a.runs))
-    batch = _j(HOME / "tsf/dev/uc45/batch/summary.json")
-    batch_v1 = _j(HOME / "tsf/dev/uc45/batch/summary_v1_prefix.json")
+    bdir = HOME / "tsf/dev/uc45/batch"
+    batches = [(v, b) for v, b in (("v1", _j(bdir / "summary_v1_prefix.json")), ("v3", _j(bdir / "summary_v3.json")),
+                                   ("v4", _j(bdir / "summary.json"))) if b]
     h2p = HOME / "tsf/state/harness/generations.jsonl"
     h2 = [json.loads(ln) for ln in h2p.read_text().splitlines() if ln.strip()] if h2p.exists() else []
     tex = "\n".join([
         r"\newcommand{\ResultsUCone}{%s}" % uc1(runs),
         r"\newcommand{\ResultsUCthree}{%s}" % uc3(runs),
-        r"\newcommand{\ResultsUCfourfive}{%s}" % uc45(runs, batch, batch_v1),
+        r"\newcommand{\ResultsUCfourfive}{%s}" % uc45(runs, batches),
         r"\newcommand{\ResultsKPI}{%s}" % kpis(runs, h2),
         r"\newcommand{\ResultsCosmos}{%s}" % free(HOME / "tsf/dev/cosmos_gen/results.json", "Cosmos~3 generation on Thor",
                                                     "tab:cosmos"),
-        r"\newcommand{\ResultsUCtwo}{%s}" % free(HOME / "tsf/dev/vipe/results.json", "UC2 ViPE on CC-BY dash-cam clips",
-                                                   "tab:uc2"),
+        r"\newcommand{\ResultsUCtwo}{%s}" % uc2(runs),
         r"\newcommand{\ResultsAblation}{%s}" % ablation(_j(HOME / "tsf/dev/ablation/summary.json"),
                                                         Path(a.out).parent / "figs" / "ablation.png"),
         r"\newcommand{\ResultsRefe}{%s}" % free(HOME / "tsf/dev/refe/results.json", "REFe SFT-4 on Thor: latency and "
@@ -244,7 +273,7 @@ def main():
         r"\newcommand{\ResultsTone}{%s}" % tone(Path(a.runs).parent / "t1"),
     ])
     Path(a.out).write_text(tex)
-    print(f"wrote {a.out}: {len(runs)} runs, batch={'yes' if batch else 'no'}, h2 gens={len(h2)}")
+    print(f"wrote {a.out}: {len(runs)} runs, batches={[v for v, _ in batches]}, h2 gens={len(h2)}")
 
 
 if __name__ == "__main__":
