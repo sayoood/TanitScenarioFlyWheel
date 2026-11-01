@@ -101,7 +101,7 @@ def _junction(sc: Scenario) -> xodr.OpenDrive:
                                       for a in road.approaches) * 3.5 / 2
     jc = xodr.CommonJunctionCreator(id=JUNCTION_ID, name="tsf_junction", startnum=JUNCTION_ID + 1)
     for i, ap in enumerate(road.approaches):
-        jc.add_incoming_road_circular_geometry(road_one=roads[i], radius=radius,
+        jc.add_incoming_road_circular_geometry(road=roads[i], radius=radius,
                                                angle=math.radians(ap.heading_deg), road_connection="predecessor")
     for fi, fl, ti, tl, _turn in lane_movements(sc):
         jc.add_connection(road_one_id=fi, road_two_id=ti, lane_one_id=fl, lane_two_id=-tl)

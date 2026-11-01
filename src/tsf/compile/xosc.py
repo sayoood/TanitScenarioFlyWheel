@@ -55,14 +55,15 @@ def _trigger(sc: Scenario, trig, name: str):
         rule = xosc.Rule.lessThan if trig.rule == "less" else xosc.Rule.greaterThan
         if trig.mode == "euclidean":
             cond = xosc.RelativeDistanceCondition(trig.distance, rule, xosc.RelativeDistanceType.euclidianDistance,
-                                                  trig.other, freespace=trig.freespace)
-        else:  # signed: OSC 1.3 RelativeClearanceCondition-free form = longitudinal distance in other's frame
+                                                  trig.other, alongroute=False, freespace=trig.freespace)
+        else:  # signed: longitudinal distance in the other entity's frame
             cond = xosc.RelativeDistanceCondition(trig.distance, rule, xosc.RelativeDistanceType.longitudinal,
-                                                  trig.other, freespace=trig.freespace,
+                                                  trig.other, alongroute=False, freespace=trig.freespace,
                                                   coordinate_system=xosc.CoordinateSystem.entity)
         return xosc.EntityTrigger(name, 0, edge, cond, trig.actor)
     if k == "ttc":
-        cond = xosc.TimeToCollisionCondition(trig.ttc, xosc.Rule.lessThan, entity=trig.other, freespace=True)
+        cond = xosc.TimeToCollisionCondition(trig.ttc, xosc.Rule.lessThan, alongroute=False, entity=trig.other,
+                                             freespace=True)
         return xosc.EntityTrigger(name, 0, edge, cond, trig.actor)
     if k == "distance_to_stop_line":
         a = next(x for x in sc.actors if x.id == trig.actor)
@@ -85,7 +86,8 @@ def _action(sc: Scenario, act):
         dyn = xosc.TransitionDynamics(xosc.DynamicsShapes.sinusoidal, xosc.DynamicsDimension.time, act.duration)
         return xosc.RelativeLaneChangeAction(0, act.target, dyn)
     if t == "follow":
-        return xosc.LongitudinalTimegapAction(act.target, act.time_gap, continuous=True, freespace=True)
+        return xosc.LongitudinalDistanceAction(act.target, freespace=True, continuous=True, timeGap=act.time_gap,
+                                               max_acceleration=3.0, max_deceleration=6.0)
     if t == "stop_at_line":
         return _speed(0.0, act.decel)
     if t == "brake":
