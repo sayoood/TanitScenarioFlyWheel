@@ -23,7 +23,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=9.0", "ruff>=0.14"]
-qc = ["asam-qc-opendrive", "asam-qc-baselib"]
 
 [project.scripts]
 tsf = "tsf.cli:app"
