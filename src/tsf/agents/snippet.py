@@ -104,10 +104,10 @@ class EgoAction(BaseModel):
 
 
 class EgoPlan(BaseModel):
-    diagnosis: str = Field(description="Why the logged ego behaviour is critical (cause, timing, numbers)")
-    strategy: str = Field(description="The anticipatory/defensive behaviour of the positive twin")
+    diagnosis: str = Field(max_length=500, description="Why the logged ego behaviour is critical (cause, timing, numbers), at most 3 sentences")
+    strategy: str = Field(max_length=500, description="The anticipatory/defensive behaviour of the positive twin, at most 3 sentences")
     initial_speed: float = Field(..., ge=0, description="m/s")
-    actions: list[EgoAction]
+    actions: list[EgoAction] = Field(..., min_length=1, max_length=8)
 
 
 def _splice(neg: dict, plan: EgoPlan, assertions: list[dict]) -> dict:
@@ -154,7 +154,7 @@ def twin(lifted: dict, llm: LLM, workdir: Path, max_repairs: int = 2) -> LiftRes
     for i in range(max_repairs + 1):
         ta = time.perf_counter()
         plan = EgoPlan.model_validate(llm.chat(msgs, schema=EgoPlan.model_json_schema(), role="twin_editor",
-                                               max_tokens=2500))
+                                               max_tokens=4096))
         pos = _splice(neg, plan, assertions)
         rep = ladder.run(pos, workdir / f"attempt{i}", qc=True)
         attempts.append(Attempt(pos, rep, time.perf_counter() - ta))
