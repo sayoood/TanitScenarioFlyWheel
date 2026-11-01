@@ -87,8 +87,7 @@ def _junction(sc: Scenario) -> xodr.OpenDrive:
     for i, ap in enumerate(road.approaches):
         r = xodr.create_road(xodr.Line(ap.length), id=i, left_lanes=ap.inbound.driving_lanes,
                              right_lanes=ap.outbound.driving_lanes, lane_width=ap.inbound.lane_width)
-        r.add_predecessor(xodr.ElementType.junction, JUNCTION_ID)
-        _speed(r, ap.speed_limit_kph)
+        _speed(r, ap.speed_limit_kph)  # junction predecessor link is set by CommonJunctionCreator
         if road.signalized:
             # one dynamic signal head facing inbound traffic at the stop line (left side of ref line)
             t = ap.inbound.driving_lanes * ap.inbound.lane_width + 1.0
