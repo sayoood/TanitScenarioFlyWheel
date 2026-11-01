@@ -99,37 +99,41 @@ tracks that drive both the 2D/3D viewer and the Cosmos WSM conditioning.
 
 \begin{figure}[t]\centering
 \resizebox{\linewidth}{!}{%
-\begin{tikzpicture}[font=\sffamily\small,
-  box/.style={draw=ink!50,rounded corners=3pt,fill=white,minimum height=8mm,inner sep=4pt,align=center},
-  src/.style={box,minimum width=27mm},
-  core/.style={box,fill=tanit!10,draw=tanit!70!black,minimum width=26mm},
-  arr/.style={-{Stealth[length=2.2mm]},thick,draw=ink!60}]
-\node[src,draw=uca] (u1) {UC1 text query};
-\node[src,draw=ucb,below=2mm of u1] (u2) {UC2 dash-cam video\\\scriptsize ViPE};
-\node[src,draw=ucc,below=2mm of u2] (u3) {UC3 incident (IMDAD)};
-\node[src,draw=ucd,below=2mm of u3] (u4) {UC4 sensor snippet};
-\node[src,draw=uce,below=2mm of u4] (u5) {UC5 negative snippet};
-\node[core,right=12mm of u3,minimum height=26mm] (lift) {Lifter agents\\\scriptsize Qwen3.8-27B NVFP4\\\scriptsize xgrammar JSON};
-\node[core,right=8mm of lift,minimum height=12mm] (tsir) {\textbf{TSIR}\\\scriptsize typed IR};
-\node[box,above right=2mm and 8mm of tsir] (comp) {compilers\\\scriptsize .xodr .xosc .osc};
-\node[box,below right=2mm and 8mm of tsir] (ver) {verifier ladder\\\scriptsize L0 schema \dots L5 intent};
-\node[core,right=34mm of tsir] (sim) {TanitSim\\\scriptsize ACC, signals, yield};
-\node[box,above=6mm of sim] (wsm) {WSM / RDS-HQ\\\scriptsize 7 f-theta cams + LiDAR};
-\node[core,right=8mm of wsm] (cos) {Cosmos 3\\\scriptsize Transfer / Sim-Auto};
-\node[box,right=8mm of sim] (aug) {augmentation\\\scriptsize Sobol + CEM + cells};
-\node[box,below=6mm of sim] (cl) {closed loop\\\scriptsize T0 kinematic, T1 neural};
-\node[box,right=8mm of cl] (pol) {policy under test\\\scriptsize REFe SFT-4};
-\node[box,fill=black!4,below=8mm of lift,minimum width=40mm] (h2) {Harness$^2$ library\\\scriptsize prompts, skills, lessons, knobs};
-\foreach \u in {u1,u2,u3,u4,u5} \draw[arr] (\u.east) -- (lift.west);
+\begin{tikzpicture}[font=\sffamily\small,x=1cm,y=1cm,
+  box/.style={draw=ink!45,rounded corners=3pt,fill=white,minimum height=9mm,inner sep=3pt,align=center,text width=#1},
+  box/.default=24mm,
+  core/.style={box=#1,fill=tanit!10,draw=tanit!70!black},core/.default=24mm,
+  arr/.style={-{Stealth[length=2mm]},thick,draw=ink!55},
+  fb/.style={-{Stealth[length=2mm]},thick,dashed}]
+% sources
+\foreach \i/\c/\t in {0/uca/{UC1 text query},1/ucb/{UC2 dash-cam video},2/ucc/{UC3 incident (IMDAD)},3/ucd/{UC4 sensor snippet},4/uce/{UC5 negative snippet}}
+  \node[box=27mm,draw=\c,line width=0.9pt] (u\i) at (0,-1.15*\i) {\t};
+\node[core=26mm,minimum height=30mm] (lift) at (4.2,-2.3) {\textbf{Lifter agents}\[2pt]\scriptsize Qwen3.8-27B NVFP4\\scriptsize xgrammar JSON\\scriptsize ViPE / log lifting};
+\foreach \i in {0,...,4} \draw[arr] (u\i.east) -- ++(0.35,0) |- (lift.west);
+\node[core=17mm,minimum height=14mm] (tsir) at (7.4,-2.3) {\textbf{TSIR}\\scriptsize typed IR};
 \draw[arr] (lift) -- (tsir);
-\draw[arr] (tsir) |- (comp); \draw[arr] (tsir) |- (ver);
-\draw[arr] (comp) -| (sim); \draw[arr] (ver.east) -- ++(4mm,0) |- (sim.west);
-\draw[arr,dashed,draw=ucc] (ver.south) |- node[pos=0.7,below,font=\scriptsize]{diagnostics (repair)} (lift.south east);
+\node[box=25mm] (comp) at (10.4,-0.9) {compilers\\scriptsize .xodr\,·\,.xosc\,·\,.osc};
+\node[box=25mm] (ver) at (10.4,-3.7) {verifier ladder\\scriptsize L0 schema \dots{} L3 oracle};
+\draw[arr] (tsir.north) |- (comp.west);
+\draw[arr] (tsir.south) |- (ver.west);
+\draw[arr] (comp) -- (ver);
+\node[core=24mm] (sim) at (13.6,-2.3) {\textbf{TanitSim}\\scriptsize ACC · signals · yield};
+\draw[arr] (ver.east) -| node[pos=0.25,below,font=\scriptsize]{pass} (sim.south);
+\node[box=25mm] (wsm) at (13.6,0.2) {WSM / RDS-HQ\\scriptsize 7 f-theta cams + LiDAR};
+\node[core=25mm] (cos) at (17.0,0.2) {\textbf{Cosmos 3}\\scriptsize Transfer- / Sim-Auto};
+\node[box=25mm] (aug) at (17.0,-2.3) {augmentation\\scriptsize Sobol + CEM + cells};
+\node[box=25mm] (cl) at (13.6,-5.0) {closed loop\\scriptsize T0 kinematic · T1 neural};
+\node[box=25mm] (pol) at (17.0,-5.0) {policy under test\\scriptsize TanitAD REFe SFT-4};
 \draw[arr] (sim) -- (wsm); \draw[arr] (wsm) -- (cos);
-\draw[arr] (sim) -- (aug); \draw[arr] (sim) -- (cl); \draw[arr] (cl) -- (pol); \draw[arr] (pol.north) -- ++(0,2mm) -| ($(cl.north east)!0.5!(cl.north)$);
-\draw[arr,dotted] (cos.south) -- ++(0,-3mm) -| node[pos=0.25,right,font=\scriptsize]{sensor stage (T1)} (cl.east);
-\draw[arr,dashed,draw=tanit!70!black] (ver.south) |- node[pos=0.8,above,font=\scriptsize]{reward} (h2.east);
-\draw[arr,dashed,draw=tanit!70!black] (h2) -- (lift);
+\draw[arr] (sim) -- (aug);
+\draw[arr] (sim) -- (cl);
+\draw[arr] ([yshift=1.5mm]cl.east) -- ([yshift=1.5mm]pol.west);
+\draw[arr] ([yshift=-1.5mm]pol.west) -- node[below,font=\scriptsize]{trajectory} ([yshift=-1.5mm]cl.east);
+\draw[arr,dotted] (cos.east) -- ++(0.5,0) |- node[pos=0.25,right,font=\scriptsize,align=left]{camera frames\(sensor stage, T1)} (pol.east);
+\node[box=30mm,fill=black!4] (h2) at (4.2,-5.4) {\textbf{Harness$^2$} library\\scriptsize prompts · skills · lessons · knobs};
+\draw[fb,draw=ucc] (ver.south) -- ++(0,-0.45) -| node[pos=0.25,below,font=\scriptsize]{diagnostics $\rightarrow$ repair} ([xshift=6mm]lift.south);
+\draw[fb,draw=tanit!70!black] (ver.south west) ++(0.3,0) |- node[pos=0.7,below,font=\scriptsize]{ladder score = reward} (h2.east);
+\draw[fb,draw=tanit!70!black] (h2.north) -- (lift.south -| h2.north);
 \end{tikzpicture}}
 \caption{Flywheel architecture. Solid: data flow; dashed: verification diagnostics drive repair (red) and
 harness self-improvement (teal); dotted: Cosmos as sensor stage of the neural closed-loop tier.}\label{fig:arch}
