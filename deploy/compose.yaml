@@ -1,0 +1,32 @@
+# Tanit Scenario Flywheel services on thor3 (Jetson AGX Thor, JetPack 7.2 SBSA driver, NGC multi-arch images).
+# Start:  docker compose -f deploy/compose.yaml up -d llm
+# Memory budget (122 GB unified): LLM <= 0.35 (weights ~23 GB + KV), one Cosmos model on demand.
+services:
+  llm:
+    image: nvcr.io/nvidia/vllm:26.10-py3
+    container_name: tsf-llm
+    runtime: nvidia
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      - HF_HUB_OFFLINE=1
+      - VLLM_USE_V1=1
+    volumes:
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    command: >
+      vllm serve unsloth/Qwen3.8-27B-NVFP4
+      --served-model-name qwen3.8-27b
+      --host 0.0.0.0 --port 8000
+      --max-model-len 65536
+      --gpu-memory-utilization 0.35
+      --max-num-seqs 8
+      --enable-prefix-caching
+      --reasoning-parser qwen3
+      --enable-auto-tool-choice --tool-call-parser qwen3_coder
+      --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 40

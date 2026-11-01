@@ -1,0 +1,725 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://imdad.local/schemas/imdad_incident_schema_v2.0.0.json",
+  "title": "IMDAD Autonomous Driving Incident Record v2.0.0",
+  "description": "Versioned, enriched schema for Negative, Positive, Counterfactual Positive, and Synthetically Augmented Autonomous Driving Incidents, integrating BSI PAS 1883 ODD, ASAM Scenario_Structure.json, RAVE (2025) Checklist, 4-Branch Universal Liability Evidence Collector, and Interconnected Legal-Technical-Ethical Analysis.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "incident_id",
+    "incident_polarity",
+    "lineage",
+    "workflow_state",
+    "meta_information",
+    "accident_information",
+    "scenario_specification"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "2.0.0"
+    },
+    "incident_id": {
+      "type": "string",
+      "description": "Canonical IMDAD identifier (e.g., IMDAD-2026-NEG-0001)."
+    },
+    "incident_polarity": {
+      "type": "string",
+      "enum": ["NEGATIVE", "POSITIVE"],
+      "description": "NEGATIVE: AD + monitoring/ops increased risk or failed to recognize/act safely. POSITIVE: AD + monitoring/ops handled rare/edge/corner case safely without increasing risk."
+    },
+    "lineage": {
+      "type": "object",
+      "required": ["origin_type", "is_synthetic_augmentation", "created_at", "updated_at"],
+      "properties": {
+        "origin_type": {
+          "type": "string",
+          "enum": ["REAL_WORLD", "COUNTERFACTUAL_POSITIVE", "SYNTHETIC_AUGMENTATION"]
+        },
+        "is_synthetic_augmentation": { "type": "boolean" },
+        "parent_incident_id": { "type": ["string", "null"] },
+        "counterfactual_positive_id": { "type": ["string", "null"] },
+        "augmented_variant_ids": { "type": "array", "items": { "type": "string" } },
+        "augmentation_metadata": {
+          "type": ["object", "null"],
+          "properties": {
+            "varied_dimensions": { "type": "array", "items": { "type": "string" } },
+            "transformation_rationale": { "type": "string" },
+            "odd_delta": { "type": "object" },
+            "behavior_delta": { "type": "object" }
+          }
+        },
+        "backlog_item_id": { "type": ["string", "null"] },
+        "created_at": { "type": "string" },
+        "updated_at": { "type": "string" }
+      }
+    },
+    "workflow_state": {
+      "type": "object",
+      "required": ["stage", "analysis_loops_completed", "quality_score"],
+      "properties": {
+        "stage": {
+          "type": "string",
+          "enum": ["FILLED_NO_ANALYSIS", "ANALYZING", "ANALYZED", "VISUALIZED", "AUGMENTED", "HUMAN_REVIEW_FLAGGED"]
+        },
+        "analysis_loops_completed": { "type": "integer", "minimum": 0 },
+        "quality_score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "overall_confidence_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "flagged_for_human_review": { "type": "boolean" }
+      }
+    },
+    "meta_information": {
+      "type": "object",
+      "required": [
+        "report_id",
+        "title",
+        "incident_date",
+        "source_url",
+        "sources",
+        "analysis_date",
+        "analysts",
+        "location",
+        "summary",
+        "involved_system"
+      ],
+      "properties": {
+        "report_id": { "type": "string" },
+        "title": { "type": "string" },
+        "incident_date": { "type": "string" },
+        "video_id": { "type": "string" },
+        "source_url": { "type": "string" },
+        "video_length_seconds": { "type": "number" },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["source_type", "title", "url"],
+            "properties": {
+              "source_type": {
+                "type": "string",
+                "enum": [
+                  "YOUTUBE_VIDEO",
+                  "USER_VIDEO",
+                  "NEWS_ARTICLE",
+                  "NEWS_INVESTIGATION",
+                  "TECH_AV_BLOG",
+                  "DASHCAM_VIDEO",
+                  "NHTSA_SGO",
+                  "CA_DMV_OL316",
+                  "NTSB_DOCKET",
+                  "GERMAN_KBA_AFGBV",
+                  "OEM_TELEMETRY",
+                  "REGULATORY_RECALL",
+                  "ACADEMIC_STUDY",
+                  "USER_SUBMISSION"
+                ]
+              },
+              "reference_id": { "type": "string" },
+              "title": { "type": "string" },
+              "url": { "type": "string" },
+              "credibility_score": { "type": "number", "minimum": 0, "maximum": 100 }
+            }
+          }
+        },
+        "multimodal_artifacts": {
+          "type": "object",
+          "properties": {
+            "images": { "type": "array", "items": { "type": "string" } },
+            "videos": { "type": "array", "items": { "type": "string" } },
+            "audio_clips": { "type": "array", "items": { "type": "string" } },
+            "external_links": { "type": "array", "items": { "type": "string" } },
+            "authenticity_verification": {
+              "type": "object",
+              "properties": {
+                "is_verified_authentic": { "type": "boolean" },
+                "evidence_quality": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW", "SYNTHETIC"] },
+                "ui_telemetry_overlay_visible": { "type": "boolean" },
+                "verification_notes": { "type": "string" }
+              }
+            }
+          }
+        },
+        "key_timestamps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["timestamp_seconds", "phase", "event_description"],
+            "properties": {
+              "timestamp_seconds": { "type": "number" },
+              "phase": {
+                "type": "string",
+                "enum": ["NORMAL_OPERATION", "HAZARD_ONSET", "SYSTEM_PERCEPTION", "MONITORING_ALERT_OR_TOR", "SYSTEM_OR_HUMAN_REACTION", "CLOSEST_APPROACH_OR_IMPACT", "MINIMAL_RISK_CONDITION"]
+              },
+              "event_description": { "type": "string" }
+            }
+          }
+        },
+        "analysis_date": { "type": "string" },
+        "analysts": { "type": "array", "items": { "type": "string" } },
+        "location": {
+          "type": "object",
+          "required": ["city", "state_province", "country", "market_jurisdiction"],
+          "properties": {
+            "city": { "type": "string" },
+            "state_province": { "type": "string" },
+            "country": { "type": "string" },
+            "market_jurisdiction": { "type": "string", "description": "e.g., US-CA, US-TX, DE-BY, CN-AH, GB-LND" },
+            "driving_side": { "type": "string", "enum": ["RIGHT", "LEFT"] }
+          }
+        },
+        "summary": { "type": "string" },
+        "involved_system": {
+          "type": "object",
+          "required": [
+            "developer_oem",
+            "vehicle_make_model",
+            "system_name",
+            "sae_level",
+            "system_description",
+            "monitoring_and_operation_system"
+          ],
+          "properties": {
+            "developer_oem": { "type": "string" },
+            "vehicle_make_model": { "type": "string" },
+            "system_name": { "type": "string" },
+            "system_version": { "type": "string" },
+            "sae_level": { "type": "integer", "minimum": 0, "maximum": 5 },
+            "sensor_suite": { "type": "array", "items": { "type": "string" } },
+            "engagement_status_at_t0": { "type": "string" },
+            "within_declared_odd": { "type": ["boolean", "null"] },
+            "system_description": { "type": "string" },
+            "monitoring_and_operation_system": {
+              "type": "object",
+              "required": ["dms_type", "hmi_tor_capability", "remote_operations_architecture", "monitoring_behavior_observed"],
+              "properties": {
+                "dms_type": { "type": "string" },
+                "hmi_tor_capability": { "type": "string" },
+                "remote_operations_architecture": { "type": "string" },
+                "in_vehicle_safety_operator_present": { "type": "boolean" },
+                "remote_supervisor_intervened": { "type": "boolean" },
+                "monitoring_behavior_observed": { "type": "string" }
+              }
+            }
+          }
+        },
+        "rave_checklist_profile": {
+          "type": "object",
+          "properties": {
+            "reporting_threshold_regime": { "type": "string" },
+            "police_reportable_equivalent": { "type": "boolean" },
+            "estimated_delta_v_kmh": { "type": "number" },
+            "exposure_unit_basis": { "type": "string" },
+            "known_source_biases": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "accident_information": {
+      "type": "object",
+      "required": [
+        "event_classification",
+        "sotif_quadrant",
+        "risk_delta",
+        "environment_type",
+        "road_conditions",
+        "involved_parties",
+        "event_description",
+        "damage_assessment",
+        "taxonomy_labels"
+      ],
+      "properties": {
+        "event_classification": {
+          "type": "string",
+          "enum": [
+            "accident",
+            "potential_accident",
+            "critical_challenging_situation",
+            "exemplary_edge_case_mitigation"
+          ]
+        },
+        "sotif_quadrant": {
+          "type": "string",
+          "enum": [
+            "AREA_1_KNOWN_SAFE",
+            "AREA_2_KNOWN_UNSAFE",
+            "AREA_3_UNKNOWN_UNSAFE",
+            "AREA_4_UNKNOWN_SAFE"
+          ]
+        },
+        "risk_delta": {
+          "type": "object",
+          "required": ["direction", "magnitude_score_minus10_to_plus10", "rationale"],
+          "properties": {
+            "direction": { "type": "string", "enum": ["INCREASED_RISK", "NEUTRAL_CONTROLLED_RISK", "REDUCED_IMMINENT_RISK"] },
+            "magnitude_score_minus10_to_plus10": { "type": "number", "minimum": -10, "maximum": 10 },
+            "epistemic_unknown_situation_factor": { "type": "boolean" },
+            "rationale": { "type": "string" }
+          }
+        },
+        "environment_type": {
+          "type": "string",
+          "enum": ["urban", "suburban", "rural", "highway", "parking_lot", "intersection", "construction_zone", "emergency_scene", "alley_narrow_access"]
+        },
+        "road_conditions": {
+          "type": "object",
+          "required": ["weather", "lighting", "surface"],
+          "properties": {
+            "weather": { "type": "string", "enum": ["clear", "rain", "heavy_rain", "snow", "fog", "smoke_particulate", "overcast"] },
+            "lighting": { "type": "string", "enum": ["daylight", "solar_glare", "dusk_dawn", "night_lit", "night_unlit"] },
+            "surface": { "type": "string", "enum": ["dry", "wet", "icy", "snow_covered", "debris_obstruction"] },
+            "speed_limit_kmh": { "type": "number" },
+            "lane_count": { "type": "integer" },
+            "estimated_friction_mu": { "type": "number" }
+          }
+        },
+        "traffic_signs_present": { "type": "array", "items": { "type": "string" } },
+        "precise_location": {
+          "type": "object",
+          "properties": {
+            "latitude": { "type": "number" },
+            "longitude": { "type": "number" },
+            "street_address": { "type": "string" }
+          }
+        },
+        "kinematics_summary": {
+          "type": "object",
+          "properties": {
+            "ego_initial_speed_kmh": { "type": "number" },
+            "ego_impact_or_min_dist_speed_kmh": { "type": "number" },
+            "min_ttc_seconds": { "type": "number" },
+            "min_distance_meters": { "type": "number" },
+            "peak_deceleration_mps2": { "type": "number" }
+          }
+        },
+        "involved_parties": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "role_id", "type", "description"],
+            "properties": {
+              "id": { "type": "integer" },
+              "role_id": { "type": "string" },
+              "type": {
+                "type": "string",
+                "enum": ["SDV", "human_driven_vehicle", "pedestrian", "cyclist", "e_scooter_micromobility", "motorcyclist", "emergency_vehicle_responder", "animal", "static_object"]
+              },
+              "is_vru": { "type": "boolean" },
+              "initial_speed_kmh": { "type": "number" },
+              "maneuver": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "relevant_traffic_rules": { "type": "array", "items": { "type": "object" } },
+        "relevant_regulations": { "type": "array", "items": { "type": "object" } },
+        "event_description": { "type": "string" },
+        "damage_assessment": {
+          "type": "object",
+          "required": ["severity", "kabco_scale", "description"],
+          "properties": {
+            "severity": { "type": "string", "enum": ["S0", "S1", "S2", "S3"] },
+            "kabco_scale": { "type": "string", "enum": ["O_NO_INJURY", "C_POSSIBLE_INJURY", "B_MINOR_INJURY", "A_SUSPECTED_SERIOUS", "K_FATAL"] },
+            "airbag_deployed": { "type": "boolean" },
+            "tow_away_required": { "type": "boolean" },
+            "description": { "type": "string" }
+          }
+        },
+        "exposure_estimation": {
+          "type": "object",
+          "properties": {
+            "frequency": { "type": "string", "enum": ["ultra_rare_corner_case", "rare", "occasional", "frequent"] },
+            "iso26262_exposure_class": { "type": "string", "enum": ["E1", "E2", "E3", "E4"] },
+            "rationale": { "type": "string" }
+          }
+        },
+        "human_reaction": {
+          "type": "object",
+          "properties": {
+            "in_sdv": { "type": "string" },
+            "remote_operator_or_supervisor": { "type": "string" },
+            "in_other_parties": { "type": "string" }
+          }
+        },
+        "taxonomy_labels": {
+          "type": "object",
+          "required": ["odd_tags", "scenario_tags", "subsystem_tags", "agent_tags", "regulatory_tags"],
+          "properties": {
+            "odd_tags": { "type": "array", "items": { "type": "string" } },
+            "scenario_tags": { "type": "array", "items": { "type": "string" } },
+            "subsystem_tags": { "type": "array", "items": { "type": "string" } },
+            "agent_tags": { "type": "array", "items": { "type": "string" } },
+            "regulatory_tags": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "scenario_specification": {
+      "$ref": "scenario_structure_v1.json"
+    },
+    "tri_pillar_analysis": {
+      "type": ["object", "null"],
+      "properties": {
+        "loop_iterations_completed": { "type": "integer", "minimum": 3 },
+        "final_quality_gate": {
+          "type": "object",
+          "properties": {
+            "passed": { "type": "boolean" },
+            "composite_score": { "type": "number" },
+            "legal_rigor_score": { "type": "number" },
+            "technical_depth_score": { "type": "number" },
+            "ethical_alignment_score": { "type": "number" },
+            "cross_pillar_consistency_score": { "type": "number" },
+            "rave_compliance_score": { "type": "number" }
+          }
+        },
+        "legal_analysis": {
+          "type": "object",
+          "required": [
+            "jurisdiction_framework",
+            "compliance_level",
+            "compliance_score_percent",
+            "normative_assessment_matrix",
+            "argumentative_liability_analysis",
+            "universal_evidence_collector"
+          ],
+          "properties": {
+            "jurisdiction_framework": { "type": "string" },
+            "compliance_level": {
+              "type": "string",
+              "enum": ["FULLY_COMPLIANT", "SUBSTANTIALLY_COMPLIANT", "PARTIALLY_NON_COMPLIANT", "CRITICAL_NON_COMPLIANCE"]
+            },
+            "compliance_score_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+            "normative_assessment_matrix": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["instrument_id", "category", "provision", "compliance_verdict", "legal_reasoning"],
+                "properties": {
+                  "instrument_id": { "type": "string" },
+                  "category": { "type": "string", "enum": ["STATUTE_LAW", "TYPE_APPROVAL_REGULATION", "TECHNICAL_STANDARD", "TRAFFIC_CODE"] },
+                  "provision": { "type": "string" },
+                  "compliance_verdict": { "type": "string", "enum": ["COMPLIANT", "VIOLATED", "POTENTIAL_BREACH", "NOT_TRIGGERED"] },
+                  "legal_reasoning": { "type": "string" }
+                }
+              }
+            },
+            "argumentative_liability_analysis": {
+              "type": "object",
+              "required": ["executive_thesis", "claimant_arguments", "defense_arguments", "causal_nexus_and_burden_of_proof", "liability_allocation"],
+              "properties": {
+                "executive_thesis": { "type": "string" },
+                "claimant_arguments": { "type": "array", "items": { "type": "string" } },
+                "defense_arguments": { "type": "array", "items": { "type": "string" } },
+                "causal_nexus_and_burden_of_proof": { "type": "string" },
+                "liability_allocation": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["party_branch", "estimated_share_percent", "legal_basis", "justification"],
+                    "properties": {
+                      "party_branch": { "type": "string", "enum": ["Halter_Keeper", "Fahrer_Driver", "Technische_Aufsicht_Supervisor", "Hersteller_Manufacturer", "Third_Party_Road_User"] },
+                      "estimated_share_percent": { "type": "number" },
+                      "legal_basis": { "type": "string" },
+                      "justification": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            },
+            "universal_evidence_collector": {
+              "type": "object",
+              "description": "Enriched 4-branch dynamic evidence matrix integrating structured_Analysis_Data.json across Keeper (Halter), Driver (Fahrer), Technical Supervisor (Technische Aufsicht), and Manufacturer (Hersteller).",
+              "properties": {
+                "Halter": { "type": "object" },
+                "Fahrer": { "type": "object" },
+                "Technische_Aufsicht": { "type": "object" },
+                "Hersteller": { "type": "object" }
+              }
+            },
+            "court_and_audit_dossier": {
+              "type": "object",
+              "description": "Court-, regulatory-audit-, and formal legal-review-grade evidentiary opinion with chain-of-custody seals, indexed exhibits, element-by-element statutory subsumption, and judicial/audit orders."
+            }
+          }
+        },
+        "technical_analysis": {
+          "type": "object",
+          "required": [
+            "correct_behavior_level",
+            "correct_behavior_score_percent",
+            "subsystem_behavioral_breakdown",
+            "monitoring_and_operations_evaluation",
+            "sotif_and_functional_safety",
+            "causal_evaluations"
+          ],
+          "properties": {
+            "correct_behavior_level": {
+              "type": "string",
+              "enum": ["EXEMPLARY_SAFE_MITIGATION", "ACCEPTABLE_WITH_LIMITATIONS", "SUBOPTIMAL_RISK_ELEVATING", "CRITICAL_SYSTEM_OR_OPS_FAILURE"]
+            },
+            "correct_behavior_score_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+            "explicit_engineering_assumptions": { "type": "array", "items": { "type": "string" } },
+            "subsystem_behavioral_breakdown": {
+              "type": "object",
+              "required": ["sensing_and_calibration", "perception_and_open_set_ontology", "localization_and_mapping", "prediction_and_intent", "planning_and_decision_logic", "motion_control_and_actuation"],
+              "properties": {
+                "sensing_and_calibration": { "type": "string" },
+                "perception_and_open_set_ontology": { "type": "string" },
+                "localization_and_mapping": { "type": "string" },
+                "prediction_and_intent": { "type": "string" },
+                "planning_and_decision_logic": { "type": "string" },
+                "motion_control_and_actuation": { "type": "string" }
+              }
+            },
+            "monitoring_and_operations_evaluation": {
+              "type": "object",
+              "required": ["dms_effectiveness", "hmi_and_tor_adequacy", "remote_supervision_and_teleop", "minimal_risk_maneuver_assessment"],
+              "properties": {
+                "dms_effectiveness": { "type": "string" },
+                "hmi_and_tor_adequacy": { "type": "string" },
+                "remote_supervision_and_teleop": { "type": "string" },
+                "minimal_risk_maneuver_assessment": { "type": "string" }
+              }
+            },
+            "sotif_and_functional_safety": {
+              "type": "object",
+              "properties": {
+                "iso21448_triggering_condition": { "type": "string" },
+                "iso21448_functional_insufficiency": { "type": "string" },
+                "iso26262_hara": {
+                  "type": "object",
+                  "properties": {
+                    "severity": { "type": "string" },
+                    "exposure": { "type": "string" },
+                    "controllability": { "type": "string" },
+                    "derived_asil": { "type": "string" }
+                  }
+                }
+              }
+            },
+            "causal_evaluations": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 3,
+              "items": { "type": "object" }
+            },
+            "court_and_audit_dossier": {
+              "type": "object",
+              "description": "Court-, type-approval-, and ISO 26262 / ISO 21448 / UL 4600 audit-grade forensic engineering reconstruction with millisecond fault propagation timeline, FMEA/FTA, and V&V release mandates."
+            }
+          }
+        },
+        "ethical_analysis": {
+          "type": "object",
+          "required": [
+            "applicable_regional_frameworks",
+            "ethical_alignment_level",
+            "ethical_alignment_score_percent",
+            "principle_evaluations",
+            "risk_distribution_and_vru_justice",
+            "ethical_design_recommendations"
+          ],
+          "properties": {
+            "applicable_regional_frameworks": { "type": "array", "items": { "type": "string" } },
+            "ethical_alignment_level": {
+              "type": "string",
+              "enum": ["EXEMPLARY_ETHICAL_ALIGNMENT", "CONDITIONALLY_ALIGNED", "ETHICAL_TENSION_IDENTIFIED", "SEVERE_ETHICAL_BREACH"]
+            },
+            "ethical_alignment_score_percent": { "type": "number", "minimum": 0, "maximum": 100 },
+            "principle_evaluations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["framework_rule", "principle_name", "status", "assessment"],
+                "properties": {
+                  "framework_rule": { "type": "string" },
+                  "principle_name": { "type": "string" },
+                  "status": { "type": "string", "enum": ["UPHELD", "COMPROMISED", "VIOLATED"] },
+                  "assessment": { "type": "string" }
+                }
+              }
+            },
+            "risk_distribution_and_vru_justice": { "type": "string" },
+            "human_agency_and_oversight_ethics": { "type": "string" },
+            "ethical_design_recommendations": { "type": "array", "items": { "type": "string" } },
+            "court_and_audit_dossier": {
+              "type": "object",
+              "description": "Independent Ethics Commission, EU AI Act Art. 9/13/14, BMVI 20-Rule, and ISO 39003 audit-grade societal risk & human-oversight determination."
+            }
+          }
+        },
+        "cross_pillar_synthesis": {
+          "type": "object",
+          "required": ["technical_to_legal_bridge", "legal_to_technical_bridge", "technical_to_ethical_bridge", "ethical_to_legal_and_technical_bridge", "unified_executive_verdict"],
+          "properties": {
+            "technical_to_legal_bridge": { "type": "string" },
+            "legal_to_technical_bridge": { "type": "string" },
+            "technical_to_ethical_bridge": { "type": "string" },
+            "ethical_to_legal_and_technical_bridge": { "type": "string" },
+            "unified_executive_verdict": { "type": "string" }
+          }
+        },
+        "counterfactual_positive_extraction": {
+          "type": ["object", "null"],
+          "description": "Populated for every NEGATIVE incident, describing and linking the extracted POSITIVE version where the AD + Monitoring/Operation system behaves correctly.",
+          "properties": {
+            "linked_positive_incident_id": { "type": "string" },
+            "resolution_title": { "type": "string" },
+            "normative_ad_system_behavior": { "type": "string" },
+            "normative_monitoring_and_ops_behavior": { "type": "string" },
+            "kinematic_avoidance_proof": { "type": "string" },
+            "risk_reduction_summary": { "type": "string" }
+          }
+        }
+      }
+    },
+    "causal_analysis": {
+      "type": ["object", "null"],
+      "description": "Backward-compatible v1.0.0 causal_analysis mirror synced with tri_pillar_analysis.technical_analysis.causal_evaluations."
+    },
+    "visualization_artifacts": {
+      "type": ["object", "null"],
+      "properties": {
+        "poster": {
+          "type": "object",
+          "properties": {
+            "poster_path": { "type": "string" },
+            "poster_url": { "type": "string" },
+            "hero_keyframe_path": { "type": "string" },
+            "template_version": { "type": "string" },
+            "generated_by": { "type": "string" }
+          }
+        },
+        "multi_viewpoint_video": {
+          "type": "object",
+          "properties": {
+            "combined_video_path": { "type": "string" },
+            "combined_video_url": { "type": "string" },
+            "duration_seconds": { "type": "number" },
+            "fps": { "type": "integer" },
+            "viewpoints": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": "object",
+                "required": ["viewpoint_id", "perspective_type", "label", "camera_actor", "video_url", "keyframe_url", "description"],
+                "properties": {
+                  "viewpoint_id": { "type": "string" },
+                  "perspective_type": { "type": "string", "enum": ["EGO_AD_SYSTEM", "PRIMARY_COUNTERPART_AGENT", "NEUTRAL_EXTERNAL_OBSERVER"] },
+                  "label": { "type": "string" },
+                  "camera_actor": { "type": "string" },
+                  "video_url": { "type": "string" },
+                  "keyframe_url": { "type": "string" },
+                  "description": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "derived_ad_system_specification": {
+      "type": ["object", "null"],
+      "description": "Detailed incident-derived Technical & Functional Specification for the Automated Driving System (ADS) and its Monitoring & Operation System (DMS, HMI/TOR, Remote Technical Supervision / Teleoperation, EDR/DSSAD).",
+      "properties": {
+        "spec_document_id": { "type": "string" },
+        "spec_version": { "type": "string" },
+        "derived_from_incident_id": { "type": "string" },
+        "normative_standards_baseline": { "type": "array", "items": { "type": "string" } },
+        "target_system_and_odd_envelope": {
+          "type": "object",
+          "required": ["developer_oem", "system_name", "sae_level", "operational_design_domain_bounds", "mandatory_odd_exit_triggers"],
+          "properties": {
+            "developer_oem": { "type": "string" },
+            "system_name": { "type": "string" },
+            "sae_level": { "type": "integer" },
+            "operational_design_domain_bounds": { "type": "object" },
+            "mandatory_odd_exit_triggers": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "subsystem_technical_specifications": {
+          "type": "object",
+          "required": [
+            "sensing_and_multimodal_perception",
+            "open_set_world_model_and_prediction",
+            "motion_planning_rss_and_mrm_control",
+            "monitoring_dms_hmi_tor_and_teleoperation",
+            "edr_dssad_forensic_blackbox"
+          ],
+          "properties": {
+            "sensing_and_multimodal_perception": { "type": "object" },
+            "open_set_world_model_and_prediction": { "type": "object" },
+            "motion_planning_rss_and_mrm_control": { "type": "object" },
+            "monitoring_dms_hmi_tor_and_teleoperation": { "type": "object" },
+            "edr_dssad_forensic_blackbox": { "type": "object" }
+          }
+        },
+        "functional_safety_and_sotif_requirements": {
+          "type": "array",
+          "minItems": 4,
+          "items": {
+            "type": "object",
+            "required": ["fsr_id", "domain", "asil_sotif_class", "shall_requirement", "quantitative_acceptance_kpi", "verification_method", "incident_derivation_rationale"],
+            "properties": {
+              "fsr_id": { "type": "string" },
+              "domain": { "type": "string" },
+              "asil_sotif_class": { "type": "string" },
+              "shall_requirement": { "type": "string" },
+              "quantitative_acceptance_kpi": { "type": "string" },
+              "verification_method": { "type": "string" },
+              "incident_derivation_rationale": { "type": "string" }
+            }
+          }
+        },
+        "technical_subsystem_requirements": {
+          "type": "array",
+          "minItems": 5,
+          "items": {
+            "type": "object",
+            "required": ["tsr_id", "parent_fsr_id", "subsystem", "parameter", "specification_value", "fault_reaction_or_fallback", "verification_test_id"],
+            "properties": {
+              "tsr_id": { "type": "string" },
+              "parent_fsr_id": { "type": "string" },
+              "subsystem": { "type": "string" },
+              "parameter": { "type": "string" },
+              "specification_value": { "type": "string" },
+              "fault_reaction_or_fallback": { "type": "string" },
+              "verification_test_id": { "type": "string" }
+            }
+          }
+        },
+        "verification_and_release_traceability_matrix": {
+          "type": "array",
+          "minItems": 4,
+          "items": {
+            "type": "object",
+            "required": ["incident_causal_node", "fsr_id", "tsr_id", "asam_scenario_test_id", "release_gate_metric"],
+            "properties": {
+              "incident_causal_node": { "type": "string" },
+              "fsr_id": { "type": "string" },
+              "tsr_id": { "type": "string" },
+              "asam_scenario_test_id": { "type": "string" },
+              "release_gate_metric": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "processing_telemetry": {
+      "type": ["object", "null"],
+      "description": "End-to-end TimeToIncidentProcess KPI telemetry across discovery, Step-1 filling, Argon 3-loop analysis, ADS spec synthesis, visualization, and augmentation.",
+      "properties": {
+        "backlog_discovered_at": { "type": ["string", "null"] },
+        "step1_filled_at": { "type": ["string", "null"] },
+        "deep_pipeline_completed_at": { "type": ["string", "null"] },
+        "step1_fill_duration_seconds": { "type": "number" },
+        "argon_3loop_duration_seconds": { "type": "number" },
+        "visualization_duration_seconds": { "type": "number" },
+        "augmentation_duration_seconds": { "type": "number" },
+        "total_pipeline_processing_seconds": { "type": "number" },
+        "queue_to_processed_turnaround_hours": { "type": "number" }
+      }
+    }
+  }
+}

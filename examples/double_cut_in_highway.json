@@ -1,0 +1,43 @@
+{
+  "meta": {
+    "id": "double_cut_in_highway",
+    "title": "Double sequential cut-in from both sides on a three-lane highway",
+    "description": "[Safety Analyst]: I need a cut-in scenario with a twist. The ego vehicle is in the middle lane of a three-lane highway. One car cuts in front from the right lane. Almost immediately after, another car cuts in from the left lane, forcing the ego to handle two threats in quick succession from different sides.",
+    "source": "text",
+    "polarity": "positive",
+    "tags": ["highway", "cut_in", "multi_threat", "sequential", "day", "clear"]
+  },
+  "environment": {"time_of_day": "13:00", "weather": "clear", "road_surface": "dry", "cloud_cover": 0.1},
+  "road": {
+    "type": "linear",
+    "segments": [{"kind": "line", "length": 2000}],
+    "forward": {"driving_lanes": 3, "lane_width": 3.5},
+    "backward": null,
+    "speed_limit_kph": 120
+  },
+  "actors": [
+    {"id": "ego", "role": "ego", "category": "car", "color": "white",
+     "initial": {"direction": "forward", "lane": 2, "s": 500}, "initial_speed": 30.56},
+    {"id": "cutter_right", "category": "car", "color": "red",
+     "initial": {"direction": "forward", "lane": 3, "s": 450}, "initial_speed": 33.33},
+    {"id": "cutter_left", "category": "car", "color": "blue",
+     "initial": {"direction": "forward", "lane": 1, "s": 430}, "initial_speed": 36.11}
+  ],
+  "actions": [
+    {"id": "right_cut_in", "actor": "cutter_right", "type": "cut_in", "target": "ego", "gap": 12, "duration": 3.0,
+     "start": {"kind": "distance_to_actor", "actor": "cutter_right", "other": "ego", "distance": 20, "rule": "greater", "freespace": true}},
+    {"id": "left_cut_in", "actor": "cutter_left", "type": "cut_in", "target": "ego", "gap": 12, "duration": 3.0,
+     "start": {"kind": "after_action", "action_id": "right_cut_in", "on": "start", "delay": 1.0}}
+  ],
+  "assertions": [
+    {"kind": "no_collision"},
+    {"kind": "ego_lane_change", "value": 0, "label": "ego keeps the middle lane"},
+    {"kind": "max_decel_below", "value": 6.0}
+  ],
+  "parameters": [
+    {"name": "cut_in_delay", "path": "/actions/1/start/delay", "distribution": "uniform", "low": 0.2, "high": 3.0},
+    {"name": "cutter_left_speed", "path": "/actors/2/initial_speed", "distribution": "uniform", "low": 32.0, "high": 40.0}
+  ],
+  "duration": 25.0,
+  "dt": 0.05
+}

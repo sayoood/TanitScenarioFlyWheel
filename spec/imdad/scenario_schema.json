@@ -1,0 +1,228 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://imdad.local/schemas/scenario_structure_v1.json",
+  "title": "IMDAD Scenario Specification (ASAM OpenDRIVE / OpenSCENARIO 1.x & 2.0 / CodeBeamer)",
+  "description": "Strictly follows the project's canonical Scenario_Structure.json layout for both real-world reconstructed scenarios, counterfactual positive twins, and synthetically augmented variants.",
+  "type": "object",
+  "required": ["userInput", "groundTruthAnswer"],
+  "properties": {
+    "userInput": {
+      "type": "object",
+      "required": ["userInput"],
+      "properties": {
+        "userInput": {
+          "type": "string",
+          "description": "Safety analyst prompt or incident scenario reconstruction brief."
+        }
+      }
+    },
+    "groundTruthAnswer": {
+      "type": "object",
+      "required": [
+        "reasoning",
+        "openDriveRoadDescription",
+        "assumptionsAndFilledMissedValues",
+        "openScenarioDescription1",
+        "openScenarioDescription2",
+        "pythonCode",
+        "codeBeamerScenarioDescription",
+        "derivedFunctionalRequirements",
+        "scenarioVariations"
+      ],
+      "properties": {
+        "reasoning": {
+          "type": "object",
+          "required": [
+            "analysisOfUserQuery",
+            "planToDefineScenario",
+            "requiredAssumptionsAndMissingValues",
+            "mathematicalCorpus",
+            "firstHypothesis",
+            "validationAndJudging"
+          ],
+          "properties": {
+            "analysisOfUserQuery": {
+              "type": "object",
+              "required": ["extractedInformation", "variables", "semanticMeaning"],
+              "properties": {
+                "extractedInformation": {
+                  "type": "object",
+                  "required": ["scenarioGoal", "actors", "road", "environment"],
+                  "properties": {
+                    "scenarioGoal": { "type": "string" },
+                    "actors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["id", "type", "initialState", "behavior"],
+                        "properties": {
+                          "id": { "type": "string" },
+                          "type": { "type": "string" },
+                          "initialState": { "type": "object" },
+                          "behavior": { "type": "string" }
+                        }
+                      }
+                    },
+                    "road": { "type": "object" },
+                    "environment": { "type": "object" }
+                  }
+                },
+                "variables": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["name", "value"],
+                    "properties": {
+                      "name": { "type": "string" },
+                      "value": { "type": ["string", "number", "null"] },
+                      "unit": { "type": ["string", "null"] }
+                    }
+                  }
+                },
+                "semanticMeaning": { "type": "string" }
+              }
+            },
+            "planToDefineScenario": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "requiredAssumptionsAndMissingValues": {
+              "type": "object",
+              "required": ["assumptions", "missingValues"],
+              "properties": {
+                "assumptions": { "type": "array", "items": { "type": "string" } },
+                "missingValues": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["variable", "value", "source"],
+                    "properties": {
+                      "variable": { "type": "string" },
+                      "value": { "type": "string" },
+                      "source": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            },
+            "mathematicalCorpus": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "firstHypothesis": {
+              "type": "object",
+              "required": [
+                "roadDescription",
+                "openScenarioDescription1",
+                "openScenarioDescription2",
+                "pythonCode",
+                "functionalRequirements"
+              ],
+              "properties": {
+                "roadDescription": { "type": "string" },
+                "openScenarioDescription1": { "type": "string" },
+                "openScenarioDescription2": { "type": "string" },
+                "pythonCode": { "type": "string" },
+                "functionalRequirements": { "type": "string" }
+              }
+            },
+            "validationAndJudging": {
+              "type": "object",
+              "required": ["syntaxCheck", "scenarioValidityCheck", "improvements"],
+              "properties": {
+                "syntaxCheck": { "type": "object" },
+                "scenarioValidityCheck": {
+                  "type": "object",
+                  "required": ["isConsistent", "conflicts"],
+                  "properties": {
+                    "isConsistent": { "type": "boolean" },
+                    "conflicts": { "type": "array", "items": { "type": "string" } }
+                  }
+                },
+                "improvements": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          }
+        },
+        "openDriveRoadDescription": { "type": "string" },
+        "assumptionsAndFilledMissedValues": {
+          "type": "object",
+          "required": ["assumptions", "filledValues"],
+          "properties": {
+            "assumptions": { "type": "array", "items": { "type": "string" } },
+            "filledValues": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["variable", "value", "source"],
+                "properties": {
+                  "variable": { "type": "string" },
+                  "value": { "type": "string" },
+                  "source": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "openScenarioDescription1": { "type": "string" },
+        "openScenarioDescription2": { "type": "string" },
+        "pythonCode": { "type": "string" },
+        "codeBeamerScenarioDescription": {
+          "type": "object",
+          "required": [
+            "shortScenarioDescription",
+            "scenarioCategory",
+            "initialStates",
+            "finalStates",
+            "environmentConditions",
+            "roadDescription",
+            "staticEnvironment",
+            "dynamicEnvironment",
+            "events",
+            "behaviorSequence"
+          ],
+          "properties": {
+            "shortScenarioDescription": {
+              "type": "object",
+              "required": ["title", "keywords", "tags"],
+              "properties": {
+                "title": { "type": "string" },
+                "keywords": { "type": "array", "items": { "type": "string" } },
+                "tags": { "type": "array", "items": { "type": "string" } }
+              }
+            },
+            "scenarioCategory": { "type": "string" },
+            "initialStates": { "type": "array", "items": { "type": "object" } },
+            "finalStates": { "type": "array", "items": { "type": "object" } },
+            "environmentConditions": { "type": "object" },
+            "roadDescription": { "type": "object" },
+            "staticEnvironment": { "type": "array", "items": { "type": "object" } },
+            "dynamicEnvironment": { "type": "array", "items": { "type": "object" } },
+            "events": { "type": "array", "items": { "type": "object" } },
+            "behaviorSequence": { "type": "object" }
+          }
+        },
+        "derivedFunctionalRequirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "requirement", "passCriteria"],
+            "properties": {
+              "id": { "type": "string" },
+              "requirement": { "type": "string" },
+              "passCriteria": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "scenarioVariations": {
+          "type": "object",
+          "required": ["description", "variableIntervals"],
+          "properties": {
+            "description": { "type": "string" },
+            "variableIntervals": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
+    }
+  }
+}

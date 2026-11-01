@@ -1,0 +1,6 @@
+- Never reference a lane number above the road's `driving_lanes`, or an actor or action id that does not exist.
+- Keep speeds plausible: at most the speed limit + 20 %, and urban junction turns at 4-9 m/s.
+- Keep 2-10 NPCs unless the description demands more. Each NPC must have a purpose: lead, follower, oncoming, cross traffic, or a threat.
+- Place NPCs so that they do not overlap at t = 0. Keep at least the vehicle length plus 5 m between vehicles in the same lane.
+- Fill unspecified values with explicit, typical assumptions. The analysis step records them.
+- Output only the TSIR JSON object: no commentary.

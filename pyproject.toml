@@ -19,6 +19,7 @@ dependencies = [
     "uvicorn[standard]>=0.38",
     "typer>=0.20",
     "rich>=14.0",
+    "jsonschema>=4.25",
 ]
 
 [project.optional-dependencies]
