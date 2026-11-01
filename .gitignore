@@ -34,3 +34,6 @@ report/build/
 *.synctex.gz
 desktop.ini
 third_party/
+
+# competitive strategy / moat backlog (private, never public)
+strategy/
