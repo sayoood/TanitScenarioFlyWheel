@@ -142,7 +142,7 @@ def ablation() -> list[dict]:
     by = {(r["cond"], r["q"], r["rep"]): r for r in rows}
     out = []
     for (cond, q, rep), r in sorted(by.items()):
-        if cond not in ("D", "E") or not r["correct"]:
+        if cond not in ("D", "E", "F", "G") or not r["correct"]:
             continue
         base = by.get(("A", q, rep))
         if base is None or base["correct"]:
@@ -151,7 +151,8 @@ def ablation() -> list[dict]:
         for c, row in (("A", base), (cond, r)):
             wd = ABLATION / "work" / f"{c}_q{q}_r{rep}"
             att = sorted(wd.glob("attempt*/tsir.json"))
-            name = {"A": "one-shot", "D": "agentic + repair", "E": "agentic + repair, Harness2"}[c]
+            name = {"A": "one-shot", "D": "agentic + repair", "E": "agentic + repair, Harness2",
+                    "F": "agentic + repair + schema", "G": "one-shot + repair"}[c]
             verdict = "correct" if row["correct"] else (row["intent_failed"] or [row["first_failure"]])[0]
             title = f"{c} {name}: {verdict}"[:80]
             dst = OUT / "ablation" / f"q{q}_r{rep}_{c}.mp4"

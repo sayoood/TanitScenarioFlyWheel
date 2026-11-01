@@ -125,8 +125,9 @@ def kpis(runs: list[dict], h2: list[dict]) -> str:
     return table("Speed and self-improvement KPIs.", "tab:kpi", "lr", ["KPI", "value"], rows)
 
 
-COND = {"A": "A one-shot", "B": "B one-shot + harness", "C": "C agentic", "D": "D agentic + repair",
-        "E0": "E$_0$ agentic, H$^2$", "E": "E agentic + repair, H$^2$"}
+COND = {"A": "A one-shot (schema)", "G0": "A$'$ one-shot (replicate)", "G": "G one-shot + repair",
+        "B": "B one-shot + harness", "C": "C agentic", "D": "D agentic + repair", "F0": "F$_0$ agentic + schema",
+        "F": "F agentic + schema + repair", "E0": "E$_0$ agentic, H$^2$", "E": "E agentic + repair, H$^2$"}
 
 
 def ablation(s: dict | None, fig: Path) -> str:
@@ -173,13 +174,13 @@ def _ablation_fig(s: dict, out: Path) -> None:
             hi.append(d["correct_ci"][1] - d["correct_rate"])
         ax.bar(xs, ys, w, color=col, label=lab, zorder=2)
         ax.errorbar(xs, ys, yerr=[lo, hi], fmt="none", ecolor=ink, elinewidth=1, capsize=2.5, zorder=3)
-    ax.set_xticks(range(len(conds)), [c.replace("E0", "E$_0$") for c in conds])
+    ax.set_xticks(range(len(conds)), [c.replace("E0", "E$_0$").replace("F0", "F$_0$").replace("G0", "A$'$") for c in conds])
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("correct rate", color=ink)
     ax.legend(frameon=False, fontsize=8, loc="upper left")
     tok = [s[f"{c}/all"].get("mean_completion_tokens") or 0 for c in conds]
     bx.bar(range(len(conds)), tok, 0.6, color=muted, zorder=2)
-    bx.set_xticks(range(len(conds)), [c.replace("E0", "E$_0$") for c in conds])
+    bx.set_xticks(range(len(conds)), [c.replace("E0", "E$_0$").replace("F0", "F$_0$").replace("G0", "A$'$") for c in conds])
     bx.set_ylabel("completion tokens / scenario", color=ink)
     for a_ in (ax, bx):
         a_.grid(axis="y", color=grid, linewidth=0.6, zorder=0)

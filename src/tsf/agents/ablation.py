@@ -8,6 +8,11 @@ Same model, same grammar-constrained decoding, same verifier (L0-L3, ASAM QC off
   D  agentic_rep_h0  C + verifier-guided minimal-edit repair (<= max_repairs)
   E0 agentic_h2      analyse -> propose with the Harness²-evolved harness (first attempt of E)
   E  agentic_rep_h2  E0 + repair
+  G  one_shot_rep    A + verifier-guided repair (G0, its first attempt, is an independent replicate of A)
+  F  agentic_rep_sch D with the TSIR JSON schema added to the system prompt (F0 = first attempt)
+G and F were added after the first round showed that A, which sees the self-describing schema, beat B-D, which
+see the harness prose and exemplars, with the schema only enforced by the grammar. They isolate repair and
+schema-as-spec.
 Validity alone rewards trivial scenarios, so every query also carries deterministic intent checks on the TSIR and
 on the simulated trajectory (road type, lanes, actors, environment, ego manoeuvres actually executed, no
 collision). correct = L3 valid and all intent checks pass. Probe queries were seen by the evolver; held-out
@@ -212,24 +217,33 @@ def run_job(cond: str, qi: int, rep_i: int) -> list[dict]:
     sid = _slug(q, 40)
     wd = OUT / "work" / f"{cond}_q{qi}_r{rep_i}"
     t0 = time.perf_counter()
-    if cond in ("A", "B"):
-        if cond == "A":
-            msgs = [{"role": "system", "content": BARE + "\n\nTSIR JSON schema:\n" +
-                     json.dumps(lif._tsir_schema, separators=(",", ":"))},
+    schema = "\n\nTSIR JSON schema:\n" + json.dumps(lif._tsir_schema, separators=(",", ":"))
+    if cond in ("A", "B", "G"):
+        if cond in ("A", "G"):
+            msgs = [{"role": "system", "content": BARE + schema},
                     {"role": "user", "content": f"Use meta.id = \"{sid}\".\nRequest:\n{q}"}]
         else:
             msgs = [{"role": "system", "content": lif.h.system(q)},
                     {"role": "user", "content": f"{lif._skills_block(q)}\n\nNow write the TSIR for this request. Use "
                                                 f"meta.id = \"{sid}\".\nRequest:\n{q}"}]
-        att = lif.iterate(msgs, sid, wd, max_repairs=0, qc=False, role=f"oneshot_{cond}")[0]
-        return [_row(cond, qi, rep_i, att, checks, time.perf_counter() - t0, llm.stats())]
+        if cond != "G":
+            att = lif.iterate(msgs, sid, wd, max_repairs=0, qc=False, role=f"oneshot_{cond}")[0]
+            return [_row(cond, qi, rep_i, att, checks, time.perf_counter() - t0, llm.stats())]
+        atts = lif.iterate(msgs, sid, wd, k["max_repairs"], qc=False, role="oneshot_G")
+        final = next((a for a in reversed(atts) if a.report.passed), atts[-1])
+        first = {"calls": 1, "completion_tokens": None, "prompt_tokens": None}
+        return [_row("G0", qi, rep_i, atts[0], checks, atts[0].seconds, {**llm.stats(), **first}),
+                {**_row("G", qi, rep_i, final, checks, time.perf_counter() - t0, llm.stats()), "repairs": len(atts) - 1}]
     analysis = lif.analyse(q)
     t_an = time.perf_counter() - t0
     st_an = llm.stats()
-    atts = lif.iterate(lif.propose(q, analysis, sid), sid, wd, k["max_repairs"], qc=False)
+    msgs = lif.propose(q, analysis, sid)
+    if cond == "F":
+        msgs[0]["content"] += schema
+    atts = lif.iterate(msgs, sid, wd, k["max_repairs"], qc=False)
     first = {"calls": st_an["calls"] + 1, "completion_tokens": None, "prompt_tokens": None}
     final = next((a for a in reversed(atts) if a.report.passed), atts[-1])
-    c0 = "C" if cond == "D" else "E0"
+    c0 = {"D": "C", "E": "E0", "F": "F0"}[cond]
     return [_row(c0, qi, rep_i, atts[0], checks, t_an + atts[0].seconds, {**llm.stats(), **first}),
             {**_row(cond, qi, rep_i, final, checks, time.perf_counter() - t0, llm.stats()), "repairs": len(atts) - 1}]
 
@@ -246,7 +260,7 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
 
 def summarize(rows: list[dict]) -> dict:
     out = {}
-    for cond in ("A", "B", "C", "D", "E0", "E"):
+    for cond in ("A", "G0", "G", "B", "C", "D", "F0", "F", "E0", "E"):
         for split in ("all", "probe", "held_out"):
             r = [x for x in rows if x["cond"] == cond and (split == "all" or x["split"] == split)]
             if not r:
@@ -264,7 +278,7 @@ def summarize(rows: list[dict]) -> dict:
                 "mean_repairs": round(sum(x.get("repairs", 0) for x in r) / n, 2)}
     # paired wins/losses vs. the one-shot baseline (same query and repetition)
     base = {(x["q"], x["rep"]): x["correct"] for x in rows if x["cond"] == "A"}
-    for cond in ("B", "C", "D", "E0", "E"):
+    for cond in ("G0", "G", "B", "C", "D", "F0", "F", "E0", "E"):
         pr = [(base[(x["q"], x["rep"])], x["correct"]) for x in rows if x["cond"] == cond and (x["q"], x["rep"]) in base]
         if pr:
             out[f"{cond}/vs_A"] = {"wins": sum(1 for a, b in pr if b and not a), "losses": sum(1 for a, b in pr if a and not b),
