@@ -53,6 +53,10 @@ def _do(act) -> str:
                f"shape: sinusoidal, duration: {_q(act.duration, 's')})"
     if t == "cut_in":
         return f"{a}.change_lane(target: {act.target}.lane, shape: sinusoidal, duration: {_q(act.duration, 's')})"
+    if t == "lane_offset":
+        return f"{a}.drive(duration: {_q(act.duration, 's')}) with:\n{{ind}}    lateral(distance: " \
+               f"{_q(abs(act.offset), 'm')}, side_of: {a}.lane.center, side: side_left_right!" \
+               f"{'left' if act.offset >= 0 else 'right'}, at: end)"
     if t == "follow":
         return f"{a}.drive() with:\n{{ind}}    keep_time_gap(target: {act.target}, gap: {_q(act.time_gap, 's')})"
     if t == "stop_at_line":

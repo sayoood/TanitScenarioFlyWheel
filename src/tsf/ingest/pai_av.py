@@ -153,7 +153,7 @@ def _rdp(t: np.ndarray, v: np.ndarray, tol: float) -> list[int]:
     return [0] + rec(0, len(t) - 1) + [len(t) - 1]
 
 
-def speed_actions(aid: str, t: np.ndarray, v: np.ndarray, t0: float, tol: float = 0.7) -> list[dict]:
+def speed_actions(aid: str, t: np.ndarray, v: np.ndarray, t0: float, tol: float = 1.0) -> list[dict]:
     idx = _rdp(t, v, tol)
     acts = []
     for a, b in zip(idx[:-1], idx[1:]):
@@ -184,6 +184,29 @@ def lane_actions(aid: str, t: np.ndarray, d: np.ndarray, t0: float) -> list[dict
     return acts
 
 
+def offset_actions(aid: str, t: np.ndarray, d: np.ndarray, t0: float, thr: float = 0.45, min_s: float = 1.5) -> list[dict]:
+    """Sustained in-lane lateral excursions (nudges) -> lane_offset actions out and back."""
+    r = gaussian_filter1d(d - np.round(d / W) * W, 3)
+    on = np.abs(r) > thr
+    acts, i = [], 0
+    while i < len(on):
+        if not on[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(on) and on[j + 1]:
+            j += 1
+        if t[j] - t[i] >= min_s and abs(d[i] - d[j]) < W / 2:   # not part of a lane change
+            for when, target in ((max(t[i] - 1.0, t[0]), float(np.median(r[i:j + 1]))), (t[j], 0.0)):
+                if when - t0 < 0.05 and target == 0.0 and not acts:
+                    continue
+                acts.append({"id": f"{aid}_off{len(acts)}", "type": "lane_offset", "actor": aid,
+                             "start": {"kind": "sim_time", "t": round(max(0.0, when - t0), 2)},
+                             "offset": round(float(np.clip(target, -2.5, 2.5)), 2), "duration": 2.0})
+        i = j + 1
+    return acts
+
+
 def _sample(tr: Track, tq: np.ndarray) -> np.ndarray:
     return np.stack([np.interp(tq, tr.t, tr.sd[:, 0]), np.interp(tq, tr.t, tr.sd[:, 1])], 1)
 
@@ -194,7 +217,7 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
     """Returns a TSIR dict (+ `_log` with the Frenet ground truth used for the fidelity check)."""
     T = clip.t[-1]
     duration = float(min(duration or T - t0, T - t0))
-    ref = reference(clip)
+    ref = reference(clip, back=200.0, fwd=450.0)   # room for late (back-extrapolated) appearances
     ego_sd = ref.frenet(clip.xy)
     for tr in clip.tracks:
         tr.sd = ref.frenet(tr.xy)
@@ -231,8 +254,9 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
     actors.append({"id": "ego", "role": "ego", "category": "car", "initial": {"road": 0, "direction": "forward",
                    "lane": ego_lane, "s": round(ego_s0, 2)}, "initial_speed": round(float(clip.v[i0]), 2)})
     ds_ego = np.gradient(ego_sd[:, 0], clip.t)
-    actions += speed_actions("ego", te, gaussian_filter1d(ds_ego, 3)[i0:], t0)
+    actions += speed_actions("ego", te, gaussian_filter1d(ds_ego, 5)[i0:], t0)
     actions += lane_actions("ego", te, ego_sd[i0:, 1] - ego_d0, t0)
+    actions += offset_actions("ego", te, ego_sd[i0:, 1] - ego_d0, t0)
     gt = {"ego": {"t": (te - t0).tolist(), "s": (ego_sd[i0:, 0] + s_off).tolist(), "d": (ego_sd[i0:, 1] - ego_d0).tolist()}}
     for n, (dist, tr, dh) in enumerate(cands):
         aid = f"{tr.cls}_{n}"
@@ -241,7 +265,7 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
             continue
         sd = _sample(tr, ts)
         sd[:, 1] -= ego_d0
-        v = gaussian_filter1d(np.gradient(sd[:, 0], ts), 2)
+        v = gaussian_filter1d(np.gradient(sd[:, 0], ts), 4)
         L = float(ref.s[-1] - ref.s[0])
         s_fwd = sd[:, 0] + s_off                              # road s in the forward direction
         if dh > 3 * math.pi / 4:                              # oncoming: backward lanes, s runs from the road end
@@ -258,10 +282,14 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
             s_gt = s_fwd
             s0 = s_gt[0] - v[0] * (ts[0] - t0)
             init = {"road": 0, "direction": "forward", "lane": lane, "s": round(float(s0), 2)}
+            off = sd[:, 1] - (ego_lane - lane) * W                # offset from its lane centre
             if np.abs(v).max() < 0.8:                         # parked: keep its offset from the lane centre
-                init["t_offset"] = round(float(np.clip(sd[:, 1].mean() - (ego_lane - lane) * W, -2.5, 2.5)), 2)
+                init["t_offset"] = round(float(np.clip(off.mean(), -2.5, 2.5)), 2)
+            elif abs(np.median(off[:10])) > 0.4:              # moving but riding off-centre (e.g. a wide truck)
+                init["t_offset"] = round(float(np.clip(np.median(off[:10]), -2.5, 2.5)), 2)
             speed = max(0.0, float(np.median(v[:5])))
-            acts = speed_actions(aid, ts, np.maximum(v, 0), t0) + lane_actions(aid, ts, sd[:, 1], t0)
+            acts = (speed_actions(aid, ts, np.maximum(v, 0), t0) + lane_actions(aid, ts, sd[:, 1], t0)
+                    + (offset_actions(aid, ts, sd[:, 1], t0) if np.abs(v).max() >= 0.8 else []))
         cat = tr.cls if tr.cls in ("car", "truck", "bus", "van", "motorcycle", "bicycle", "pedestrian") else "car"
         if cat == "pedestrian":
             continue                                             # crossing pedestrians: TODO cross actions

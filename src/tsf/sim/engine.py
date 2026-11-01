@@ -182,6 +182,8 @@ class Agent:
     time_gap: float = 1.5
     follow_target: str | None = None
     lc: dict | None = None            # active lane change {d0, t0, T}
+    d_off: float = 0.0                # persistent in-lane offset (lane_offset / initial t_offset)
+    lo: dict | None = None            # active lane offset transition {d0, d1, t0, T}
     braking: float | None = None      # emergency brake decel
     stop_line: bool = False           # stop_at_line active
     a: float = 0.0
@@ -249,7 +251,7 @@ class TanitSim:
             else:
                 keys, rem = build_route(m, key, list(a.route), horizon)
                 ag = Agent(a.id, a.role, a.category, (l, w, h), Path(m, keys), prog, a.initial_speed, rem,
-                           d=a.initial.t_offset, v_des=max(a.initial_speed, 0.1))
+                           d=a.initial.t_offset, d_off=a.initial.t_offset, v_des=max(a.initial_speed, 0.1))
                 ag.turns_all = list(a.route)
                 if a.role == "ego" and ego_policy is not None:
                     ag.external = True
@@ -329,6 +331,8 @@ class TanitSim:
             ag.b_comf = act.decel
         elif ty == "brake":
             ag.braking = act.decel
+        elif ty == "lane_offset":
+            ag.lo = {"d0": ag.d, "d1": act.offset, "t0": self.t, "T": act.duration, "id": act.id}
         elif ty == "cross":
             sgn = 1 if act.side == "right_to_left" else -1
             ag.free = {"vx": -math.sin(ag.yaw - math.pi / 2) * act.speed * sgn * -1,
@@ -542,11 +546,19 @@ class TanitSim:
             if ag.lc:
                 el = (t + dt - ag.lc["t0"]) / ag.lc["T"]
                 if el >= 1:
-                    ag.d = 0.0
+                    ag.d = ag.d_off
                     self._end_action(ag.lc["id"], ag.id)
                     ag.lc = None
                 else:
-                    ag.d = ag.lc["d0"] * (1 - (10 * el**3 - 15 * el**4 + 6 * el**5))
+                    ag.d = ag.d_off + (ag.lc["d0"] - ag.d_off) * (1 - (10 * el**3 - 15 * el**4 + 6 * el**5))
+            elif ag.lo:
+                el = (t + dt - ag.lo["t0"]) / ag.lo["T"]
+                if el >= 1:
+                    ag.d = ag.d_off = ag.lo["d1"]
+                    self._end_action(ag.lo["id"], ag.id)
+                    ag.lo = None
+                else:
+                    ag.d = ag.lo["d0"] + (ag.lo["d1"] - ag.lo["d0"]) * (10 * el**3 - 15 * el**4 + 6 * el**5)
             if ag.p >= ag.path.length - 0.5:
                 ag.done = True
                 self.events.append({"t": round(t, 3), "type": "route_end", "actor": ag.id})

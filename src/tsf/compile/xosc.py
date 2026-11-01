@@ -82,6 +82,9 @@ def _action(sc: Scenario, act):
         n = act.lanes if act.direction == "left" else -act.lanes
         dyn = xosc.TransitionDynamics(xosc.DynamicsShapes.sinusoidal, xosc.DynamicsDimension.time, act.duration)
         return xosc.RelativeLaneChangeAction(n, act.actor, dyn)
+    if t == "lane_offset":
+        return xosc.AbsoluteLaneOffsetAction(act.offset, xosc.DynamicsShapes.cubic,
+                                             maxlatacc=max(0.3, 4 * abs(act.offset) / act.duration ** 2), continuous=False)
     if t == "cut_in":
         dyn = xosc.TransitionDynamics(xosc.DynamicsShapes.sinusoidal, xosc.DynamicsDimension.time, act.duration)
         return xosc.RelativeLaneChangeAction(0, act.target, dyn)

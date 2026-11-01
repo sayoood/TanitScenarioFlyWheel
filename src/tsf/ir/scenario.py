@@ -245,8 +245,15 @@ class CrossRoad(_Action):
     side: Literal["left_to_right", "right_to_left"] = "right_to_left"
 
 
+class LaneOffset(_Action):
+    """In-lane lateral shift (e.g. nudging past a vehicle that partly blocks the lane); kept until changed."""
+    type: Literal["lane_offset"] = "lane_offset"
+    offset: float = Field(..., ge=-2.5, le=2.5, description="target offset from the lane centre, m, + = left")
+    duration: float = Field(2.0, gt=0.3, le=10)
+
+
 Action = Annotated[
-    Union[SpeedChange, LaneChange, FollowActor, CutIn, StopAtLine, EmergencyBrake, CrossRoad],
+    Union[SpeedChange, LaneChange, FollowActor, CutIn, StopAtLine, EmergencyBrake, CrossRoad, LaneOffset],
     Field(discriminator="type")]
 
 
