@@ -18,8 +18,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from tsf.agents.harness import Harness
 from tsf.agents.llm import LLM
@@ -30,48 +31,52 @@ Scalar = str | float | int | bool | None
 
 
 # ----------------------------------------------------------------------------- step schemas
+# bounded free text: with many lifted road users an unbounded analysis ran past max_tokens (truncated JSON)
+Text = Annotated[str, StringConstraints(max_length=400)]
+
+
 class ActorInfo(BaseModel):
-    id: str
-    type: str
+    id: str = Field(max_length=40)
+    type: str = Field(max_length=40)
     initialState: dict[str, Scalar]
-    behavior: str
+    behavior: Text
 
 
 class ExtractedInformation(BaseModel):
-    scenarioGoal: str
-    actors: list[ActorInfo]
+    scenarioGoal: Text
+    actors: list[ActorInfo] = Field(..., max_length=16)
     road: dict[str, Scalar]
     environment: dict[str, Scalar]
 
 
 class Variable(BaseModel):
-    name: str
-    value: str | float | None
-    unit: str | None
+    name: str = Field(max_length=80)
+    value: Text | float | None
+    unit: str | None = Field(None, max_length=20)
 
 
 class MissingValue(BaseModel):
-    variable: str
-    value: str
-    source: str
+    variable: str = Field(max_length=80)
+    value: Text
+    source: Text
 
 
 class Assumptions(BaseModel):
-    assumptions: list[str]
-    missingValues: list[MissingValue]
+    assumptions: list[Text] = Field(..., max_length=12)
+    missingValues: list[MissingValue] = Field(..., max_length=16)
 
 
 class AnalysisOfUserQuery(BaseModel):
     extractedInformation: ExtractedInformation
-    variables: list[Variable]
-    semanticMeaning: str
+    variables: list[Variable] = Field(..., max_length=24)
+    semanticMeaning: str = Field(max_length=800)
 
 
 class Analysis(BaseModel):
     analysisOfUserQuery: AnalysisOfUserQuery
-    planToDefineScenario: list[str] = Field(..., min_length=3, max_length=10)
+    planToDefineScenario: list[Text] = Field(..., min_length=3, max_length=10)
     requiredAssumptionsAndMissingValues: Assumptions
-    mathematicalCorpus: list[str] = Field(..., min_length=2, max_length=8)
+    mathematicalCorpus: list[Text] = Field(..., min_length=2, max_length=8)
 
 
 class ShortDesc(BaseModel):

@@ -69,6 +69,8 @@ class LLM:
                 if attempt == retries:
                     raise
                 temperature = min(1.0, temperature + 0.3)
+                if finish == "length":           # truncated, not malformed: give the retry room to finish
+                    max_tokens = min(2 * max_tokens, 16384)
         raise RuntimeError("unreachable")
 
     def stats(self) -> dict:
