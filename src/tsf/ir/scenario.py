@@ -181,8 +181,10 @@ class DistanceToStopLine(_M):
 
 
 class AfterAction(_M):
+    """OSC1 StoryboardElementStateCondition: fires `delay` s after the referenced action starts/ends."""
     kind: Literal["after_action"] = "after_action"
     action_id: str
+    on: Literal["start", "end"] = "end"
     delay: float = Field(0.0, ge=0)
 
 
