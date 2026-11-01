@@ -147,16 +147,19 @@ def _twin_feedback(rep) -> str:
     k = int(np.argmin(S[:, e, 4]))
     ex, ey, eyaw = S[k, e, :3]
     best = None
-    for j, aid in enumerate(log.ids):
-        if j == e or log.lanes[k][j] != log.lanes[k][e]:
+    for j, aid in enumerate(log.ids):                # the engine's corridor: lateral overlap, not lane membership,
+        if j == e:                                   # so a car parked half into the ego lane counts
             continue
         dx, dy = S[k, j, 0] - ex, S[k, j, 1] - ey
         lon = dx * np.cos(eyaw) + dy * np.sin(eyaw)
-        if lon > 0 and (best is None or lon < best[1]):
-            best = (aid, lon, S[k, j, 3])
-    lead = (f"at the braking peak (t={t[k]:.1f} s, ego {S[k, e, 3]:.1f} m/s) the vehicle ahead in the ego lane is "
+        lat = -dx * np.sin(eyaw) + dy * np.cos(eyaw)
+        if 0 < lon < 120 and abs(lat) < (log.lwh[e, 1] + log.lwh[j, 1]) / 2 + 0.25 and (best is None or lon < best[1]):
+            best = (aid, lon, S[k, j, 3], lat)
+    lead = (f"at the braking peak (t={t[k]:.1f} s, ego {S[k, e, 3]:.1f} m/s) the obstacle ahead in the ego's path is "
             f"{best[0]}: {best[1] - (log.lwh[e, 0] + log.lwh[log.ids.index(best[0]), 0]) / 2:.1f} m bumper gap, "
-            f"{best[2]:.1f} m/s. " if best else f"at the braking peak (t={t[k]:.1f} s) no vehicle is ahead in the ego lane. ")
+            f"{best[2]:.1f} m/s, lateral offset {best[3]:+.1f} m. If it is stationary, the ego must stop behind it: "
+            "plan an earlier, gentler stop (a < 2 m/s2) instead of re-accelerating towards it. "
+            if best else f"at the braking peak (t={t[k]:.1f} s) nothing is in the ego's path. ")
     return f"Twin ego speed per second (m/s): {np.round(v, 1).tolist()}; {lead}\n"
 
 
