@@ -79,8 +79,8 @@ export const UC1_EXAMPLES = [
 ];
 
 export const UC_EXAMPLE_INPUTS: Record<Exclude<UseCaseId, "uc1">, string[]> = {
-  uc2: ["/data/dashcam/audi_a6/2026-10-22_urban_0417.mp4", "https://example.org/dashcam/roundabout_night.mp4"],
-  uc3: ["imdad:inc_000231", "imdad:inc_000187", "imdad:inc_000302"],
-  uc4: ["physicalai_av:clip_0a41c7e2", "physicalai_av:clip_77be9f10"],
-  uc5: ["physicalai_av:clip_3d92aa05", "tanit_log:neg_0042"],
+  uc2: ["youtube:qdAI_quNcqw", "youtube:amuldGGgNc4", "youtube:dToIIqqvSt0"],
+  uc3: ["IMDAD-2025-NEG-0037", "IMDAD-2023-NEG-0033", "IMDAD-2026-NEG-0014"],
+  uc4: ["pai_av:b3681088-1163-447b-8a66-d8277ffec933", "pai_av:0cd05bb5-5459-465f-8b59-08300162b292"],
+  uc5: ["pai_av:bcc52cd1-9507-425e-a5a6-5f8a795ed525", "pai_av:f33a4bdb-871c-4e67-8ac5-73cfaf97cb1d"],
 };

@@ -19,10 +19,10 @@ const INCIDENTS: Record<string, string> = {
 };
 
 const INPUT_META: Record<Exclude<UseCaseId, "uc1">, { label: string; placeholder: string; hint: string; key: "video" | "incident_id" | "snippet" }> = {
-  uc2: { label: "Video path or URL", placeholder: "/data/dashcam/audi_a6/clip.mp4 or https://...", hint: "Path on the Thor or an http(s) URL. ViPE reconstructs poses and depth, SAM 3.1 tracks the agents.", key: "video" },
+  uc2: { label: "Video path or URL", placeholder: "youtube:<id> or a video path on the Thor", hint: "Single dash-cam video without ego data. ViPE estimates intrinsics, metric depth and ego motion.", key: "video" },
   uc3: { label: "IMDAD incident id", placeholder: "imdad:inc_000231", hint: "An IMDAD v2 NEGATIVE record. The Counterfactual agent writes a positive twin (ego edits only).", key: "incident_id" },
-  uc4: { label: "Sensor snippet id", placeholder: "dataset:clip_id", hint: "Format dataset:clip_id, for example physicalai_av:clip_0a41c7e2. Ego GT and tracked agents are replayed into TSIR.", key: "snippet" },
-  uc5: { label: "Negative snippet id", placeholder: "dataset:clip_id", hint: "A snippet with a wrong trajectory. A positive twin plus variations become corrective training data.", key: "snippet" },
+  uc4: { label: "Sensor snippet id", placeholder: "pai_av:<clip uuid>[@t0]", hint: "PhysicalAI-AV clip on the Thor. GT egomotion and auto-labelled tracks are lifted into a verified TSIR (fidelity vs. log is reported).", key: "snippet" },
+  uc5: { label: "Negative snippet id", placeholder: "pai_av:<clip uuid>[@t0]", hint: "A critical snippet (the NEGATIVE). The twin editor rewrites only the ego plan; the verified POSITIVE plus variations become corrective training data.", key: "snippet" },
 };
 
 function Section({ title, hint, enabled, onToggle, children, icon }: { title: string; hint: string; enabled: boolean; onToggle: (v: boolean) => void; children: ReactNode; icon: ReactNode }) {
