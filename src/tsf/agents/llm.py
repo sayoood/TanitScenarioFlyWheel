@@ -40,22 +40,36 @@ class LLM:
         self.client = OpenAI(base_url=self.base_url, api_key=os.environ.get("TSF_LLM_KEY", "local"), timeout=900)
 
     def chat(self, messages: list[dict], schema: dict | None = None, role: str = "agent", thinking: bool = False,
-             temperature: float = 0.3, max_tokens: int = 8192) -> str | dict:
+             temperature: float = 0.3, max_tokens: int = 8192, retries: int = 1) -> str | dict:
         extra: dict = {"chat_template_kwargs": {"enable_thinking": thinking}}
         if schema is not None:
-            extra["structured_outputs"] = {"json": schema}
-        t0 = time.perf_counter()
-        try:
-            r = self.client.chat.completions.create(model=self.model, messages=messages, temperature=temperature,
-                                                    top_p=0.9, max_tokens=max_tokens, extra_body=extra)
-        except Exception as e:
-            self.calls.append(CallRecord(role, time.perf_counter() - t0, 0, 0, False, str(e)[:300]))
-            raise
-        dt = time.perf_counter() - t0
-        u = r.usage
-        self.calls.append(CallRecord(role, dt, u.prompt_tokens if u else 0, u.completion_tokens if u else 0, True))
-        text = r.choices[0].message.content or ""
-        return json.loads(text) if schema is not None else text
+            # compact JSON grammar: free whitespace lets the model fall into endless newline loops
+            extra["structured_outputs"] = {"json": schema, "disable_any_whitespace": True}
+            extra["repetition_penalty"] = 1.03
+        for attempt in range(retries + 1):
+            t0 = time.perf_counter()
+            try:
+                r = self.client.chat.completions.create(model=self.model, messages=messages, temperature=temperature,
+                                                        top_p=0.9, max_tokens=max_tokens, extra_body=extra)
+            except Exception as e:
+                self.calls.append(CallRecord(role, time.perf_counter() - t0, 0, 0, False, str(e)[:300]))
+                raise
+            u = r.usage
+            text = r.choices[0].message.content or ""
+            finish = r.choices[0].finish_reason
+            rec = CallRecord(role, time.perf_counter() - t0, u.prompt_tokens if u else 0, u.completion_tokens if u else 0,
+                             True)
+            self.calls.append(rec)
+            if schema is None:
+                return text
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as e:
+                rec.ok, rec.error = False, f"invalid JSON (finish={finish}): {e}"[:300]
+                if attempt == retries:
+                    raise
+                temperature = min(1.0, temperature + 0.3)
+        raise RuntimeError("unreachable")
 
     def stats(self) -> dict:
         ok = [c for c in self.calls if c.ok]
