@@ -233,28 +233,7 @@ class Lifter:
         stage("analyse", "running", "")
         analysis = self.analyse(query)
         stage("analyse", "ok", "")
-        msgs = self.propose(query, analysis, sid)
-        attempts: list[Attempt] = []
-        for i in range(k["max_repairs"] + 1):
-            ta = time.perf_counter()
-            stage("propose" if i == 0 else "repair", "running", f"attempt {i}")
-            raw = self.llm.chat(msgs, schema=self._tsir_schema, role="proposer" if i == 0 else "repairer",
-                                thinking=k["thinking"], temperature=k["temperature"])
-            raw.setdefault("meta", {})["id"] = sid
-            stage("propose" if i == 0 else "repair", "ok", f"attempt {i}")
-            stage("verify", "running", f"attempt {i}")
-            rep = ladder.run(raw, wd / f"attempt{i}")
-            attempts.append(Attempt(raw, rep, time.perf_counter() - ta))
-            stage("verify", "ok" if rep.passed else "failed", rep.diagnostics()[:300])
-            if rep.passed:
-                break
-            msgs = msgs + [{"role": "assistant", "content": json.dumps(raw, separators=(",", ":"))},
-                           {"role": "user", "content": "The verifier rejected this TSIR:\n" + rep.diagnostics() +
-                            f"\nSimulation metrics: {json.dumps(rep.metrics)}\nApply the hints. Make the MINIMAL "
-                            "change that fixes the root cause (positions, duration, timing, signal offsets, lane "
-                            "numbers, triggers, or an assertion that contradicts the scenario's own values); keep "
-                            "every actor and value that is not involved unchanged. Output the complete corrected "
-                            "TSIR."}]
+        attempts = self.iterate(self.propose(query, analysis, sid), sid, wd, k["max_repairs"], stage=stage)
         final = next((a for a in reversed(attempts) if a.report.passed), attempts[-1])
         stage("document", "running", "")
         narrative = self.document(query, analysis, attempts, final)
@@ -266,6 +245,34 @@ class Lifter:
                          time.perf_counter() - t0, wd)
         (wd / "kpis.json").write_text(json.dumps(res.kpis(), indent=2))
         return res
+
+    def iterate(self, msgs: list[dict], sid: str, wd: Path, max_repairs: int, stage=None, qc: bool = True,
+                role: str = "proposer") -> list[Attempt]:
+        """Propose -> verify -> verifier-guided minimal-edit repair, until the ladder passes or repairs run out."""
+        stage = stage or (lambda *a: None)
+        k = self.h.knobs()
+        attempts: list[Attempt] = []
+        for i in range(max_repairs + 1):
+            ta = time.perf_counter()
+            stage("propose" if i == 0 else "repair", "running", f"attempt {i}")
+            raw = self.llm.chat(msgs, schema=self._tsir_schema, role=role if i == 0 else "repairer",
+                                thinking=k["thinking"], temperature=k["temperature"])
+            raw.setdefault("meta", {})["id"] = sid
+            stage("propose" if i == 0 else "repair", "ok", f"attempt {i}")
+            stage("verify", "running", f"attempt {i}")
+            rep = ladder.run(raw, wd / f"attempt{i}", qc=qc)
+            attempts.append(Attempt(raw, rep, time.perf_counter() - ta))
+            stage("verify", "ok" if rep.passed else "failed", rep.diagnostics()[:300])
+            if rep.passed:
+                break
+            msgs = msgs + [{"role": "assistant", "content": json.dumps(raw, separators=(",", ":"))},
+                           {"role": "user", "content": "The verifier rejected this TSIR:\n" + rep.diagnostics() +
+                            f"\nSimulation metrics: {json.dumps(rep.metrics)}\nApply the hints. Make the MINIMAL "
+                            "change that fixes the root cause (positions, duration, timing, signal offsets, lane "
+                            "numbers, triggers, or an assertion that contradicts the scenario's own values); keep "
+                            "every actor and value that is not involved unchanged. Output the complete corrected "
+                            "TSIR."}]
+        return attempts
 
     def document(self, query: str, analysis: dict, attempts: list[Attempt], final: Attempt) -> dict:
         hist = [{"attempt": i, "passed": a.report.passed, "diagnostics": a.report.diagnostics()}
