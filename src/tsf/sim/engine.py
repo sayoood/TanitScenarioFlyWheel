@@ -368,7 +368,7 @@ class TanitSim:
         i = ag.path.lane_index(ag.p)
         for j in range(i, min(i + 3, len(ag.path.keys))):
             if self.m.lanes[ag.path.keys[j]].junction != "-1":
-                return ag.path.starts[j] - ag.p if j > i else None
+                return ag.path.starts[j] - ag.p - ag.lwh[0] / 2 if j > i else None
         return None
 
     def _next_junction_lane(self, ag: Agent) -> tuple[int, LaneKey] | None:
@@ -428,7 +428,7 @@ class TanitSim:
         if nj is None:
             return None
         j, jkey = nj
-        dist = ag.path.starts[j] - ag.p
+        dist = ag.path.starts[j] - ag.p - ag.lwh[0] / 2  # front bumper to stop line
         if dist > 120:
             return None
         turn = lane_turn(self.m.lanes[jkey])
@@ -525,8 +525,8 @@ class TanitSim:
             T = ag.time_gap if ag.follow_target and lid == ag.follow_target else 1.5
             acc = self._idm(ag, gap, vl, T, self.agents[lid].a if lid else None)
             sd = self._must_stop(ag)
-            if sd is not None:
-                acc = min(acc, self._idm(ag, max(sd - 1.0, 0.05), 0.0, 1.0))
+            if sd is not None:  # virtual standing obstacle 1 m past the line; IDM s0=2 m -> stop ~1 m before it
+                acc = min(acc, self._idm(ag, max(sd + 1.0, 0.05), 0.0, 1.0))
             if ag.braking is not None:
                 acc = -ag.braking
             acc = max(min(acc, ag.a_max), -9.0)
