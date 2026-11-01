@@ -180,14 +180,17 @@ def l2_lane_graph(sc: Scenario, m) -> list[Finding]:
 
 # ----------------------------------------------------------------------------- L3
 def l3_assertions(sc: Scenario, log) -> list[Finding]:
+    """Simulation oracle. Failure messages carry quantitative repair hints (the repairer's main signal)."""
     mt, out = log.metrics, []
     e = log.roles.index("ego")
     v = log.states[:, e, 3]
+    ego = next(a for a in sc.actors if a.role == "ego")
+    v0 = ego.initial_speed
     for a in sc.assertions:
         k, ok, msg = a.kind, True, ""
         if k == "no_collision":
             ok = not mt["collision"]
-            msg = "" if ok else f"collision(s): {mt['collisions']}"
+            msg = "" if ok else _collision_hint(log, mt["collisions"])
         elif k == "min_ttc_above":
             ok = mt["min_ttc"] is None or mt["min_ttc"] >= a.value
             msg = "" if ok else f"min TTC {mt['min_ttc']} s with {mt['min_ttc_actor']} < {a.value} s"
@@ -197,17 +200,23 @@ def l3_assertions(sc: Scenario, log) -> list[Finding]:
             msg = "" if ok else f"ego net lane changes to the left = {mt['ego_lane_changes_left']}, expected {want}"
         elif k == "ego_turn":
             ok = (a.label or "left") in mt["ego_turns"]
-            msg = "" if ok else f"ego turns executed {mt['ego_turns'] or 'none'}, expected '{a.label}'" \
-                                f" (did ego reach the junction within {sc.duration}s? distance {mt['ego_distance']} m)"
+            msg = "" if ok else (f"ego turns executed {mt['ego_turns'] or 'none'}, expected '{a.label}'. "
+                                 + _reach_hint(sc, ego, mt["ego_distance"], float(v[-1])))
         elif k == "red_light_respected":
             ok = not mt["red_light_violations"]
             msg = "" if ok else f"ego entered junction on red at t={mt['red_light_violations']}"
         elif k == "max_decel_below":
             ok = mt["ego_max_decel"] <= a.value
-            msg = "" if ok else f"ego peak decel {mt['ego_max_decel']} m/s2 > {a.value}"
+            ti = float(log.t[int(np.argmin(log.states[:, e, 4]))])
+            msg = "" if ok else (f"ego peak decel {mt['ego_max_decel']} m/s2 > {a.value} at t={ti:.1f}s. Give the ego "
+                                 "more distance/time before the braking event, or relax the threshold (normal urban "
+                                 "braking is 2.5-4 m/s2) unless the request demands gentle braking")
         elif k == "ego_speed_between":
             ok = bool((v >= (a.value or 0) - 0.3).all() and (v <= (a.value2 or 1e9) + 0.3).all())
             msg = "" if ok else f"ego speed range [{v.min():.1f}, {v.max():.1f}] m/s outside [{a.value}, {a.value2}]"
+            if not ok and not (a.value or 0) <= v0 <= (a.value2 or 1e9):
+                msg += (f". The assertion contradicts the scenario itself: ego initial_speed {v0} m/s is outside the "
+                        "range; widen the range or change initial_speed/speed actions")
         elif k == "ego_reaches_s":
             ok = mt["ego_distance"] >= a.value
             msg = "" if ok else f"ego travelled {mt['ego_distance']} m < {a.value} m"
@@ -216,6 +225,34 @@ def l3_assertions(sc: Scenario, log) -> list[Finding]:
             msg = "" if ok else f"ego never stopped (min speed {v.min():.2f} m/s)"
         out.append(Finding("L3", f"{k}{':' + a.label if a.label else ''}", ok, msg))
     return out
+
+
+def _reach_hint(sc: Scenario, ego, travelled: float, v_end: float) -> str:
+    from tsf.ir.scenario import Junction
+    if not isinstance(sc.road, Junction) or ego.initial.direction != "inbound":
+        return f"Ego travelled {travelled} m in {sc.duration} s."
+    need = ego.initial.s + 25.0  # reach the stop line and clear the junction
+    if travelled >= need:
+        return (f"Ego travelled {travelled} m, enough to reach the junction {ego.initial.s} m ahead: check the route "
+                "(turn list), the inbound lane (left turns only from lane 1) and the signal phase timing.")
+    t_more = (need - travelled) / max(v_end, 3.0)
+    return (f"Ego started {ego.initial.s} m before the junction and travelled only {travelled} m in {sc.duration} s. "
+            f"Increase duration to >= {sc.duration + t_more + 3:.0f} s or start the ego closer (initial.s <= "
+            f"{max(5.0, travelled - 25.0):.0f} m); then re-check signal timing so it arrives on green.")
+
+
+def _collision_hint(log, cols: list) -> str:
+    c = cols[0]
+    e = log.roles.index("ego")
+    i = int(round(c["t"] / (log.t[1] - log.t[0])))
+    msg = f"first contact t={c['t']:.1f}s with {c['with']}"
+    if c["with"] in log.ids:
+        j = log.ids.index(c["with"])
+        dx, dy = log.states[i, j, :2] - log.states[i, e, :2]
+        msg += (f" (ego lane {log.lanes[i][e]}, other lane {log.lanes[i][j]}, distance {math.hypot(dx, dy):.1f} m, "
+                f"ego {log.states[i, e, 3]:.1f} m/s, other {log.states[i, j, 3]:.1f} m/s)")
+    return (msg + ". Fix the root cause (NPC initial gaps/speeds, or the timing of the ego manoeuvre such as a lane "
+            "change into an occupied lane); do not delete the assertion.")
 
 
 # ----------------------------------------------------------------------------- ladder
