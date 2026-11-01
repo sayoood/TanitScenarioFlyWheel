@@ -339,3 +339,48 @@ def fidelity(sim, log, gt: dict) -> dict:
         out[aid] = {"ade_s": round(float(err.mean()), 2), "fde_s": round(float(err[-1]), 2), "n": int(len(tq))}
     npc = [v["ade_s"] for k, v in out.items() if k != "ego"]
     return {"ego": out.get("ego"), "npc_mean_ade_s": round(float(np.mean(npc)), 2) if npc else None, "per_actor": out}
+
+
+# ----------------------------------------------------------------------------- consistency + parameters
+def deconflict(tsir: dict, workdir, max_iter: int = 4):
+    """Lifting errors show up as collisions in re-simulation: pull the offending actor's lateral offset back
+    toward its lane centre, else drop the actor (recorded in meta). Returns (tsir, report, dropped)."""
+    from tsf.verify import ladder
+    dropped = []
+    for _ in range(max_iter):
+        rep = ladder.run(tsir, workdir, qc=False)
+        cols = rep.metrics.get("collisions") if rep.metrics else None
+        if rep.passed or not cols:
+            break
+        other = cols[0]["with"]
+        a = next((x for x in tsir["actors"] if x["id"] == other), None)
+        if a is None or a["role"] == "ego":
+            break
+        if abs(a["initial"].get("t_offset", 0.0)) > 0.3:
+            a["initial"]["t_offset"] = round(a["initial"]["t_offset"] * 0.4, 2)
+        else:
+            tsir["actors"] = [x for x in tsir["actors"] if x["id"] != other]
+            tsir["actions"] = [x for x in tsir["actions"] if x["actor"] != other]
+            dropped.append(other)
+    if dropped:
+        tsir["meta"]["description"] += f" Dropped by consistency check: {', '.join(dropped)}."
+    return tsir, rep, dropped
+
+
+def add_parameters(tsir: dict, n_actors: int = 2) -> dict:
+    """Logical parameters for augmentation: initial gap and first action of the closest NPCs."""
+    ego = next(a for a in tsir["actors"] if a["role"] == "ego")
+    npcs = sorted((a for a in tsir["actors"] if a["role"] != "ego" and a["initial"]["direction"] == "forward"),
+                  key=lambda a: abs(a["initial"]["s"] - ego["initial"]["s"]))[:n_actors]
+    params = []
+    for a in npcs:
+        j = tsir["actors"].index(a)
+        params.append({"name": f"{a['id']}_s0", "path": f"/actors/{j}/initial/s", "distribution": "uniform",
+                       "low": round(a["initial"]["s"] - 8, 1), "high": round(a["initial"]["s"] + 8, 1)})
+        i = next((k for k, x in enumerate(tsir["actions"]) if x["actor"] == a["id"]), None)
+        if i is not None:
+            st = tsir["actions"][i]["start"]["t"]
+            params.append({"name": f"{a['id']}_t_{tsir['actions'][i]['type']}", "path": f"/actions/{i}/start/t",
+                           "distribution": "uniform", "low": round(max(0.0, st - 1.5), 2), "high": round(st + 1.5, 2)})
+    tsir["parameters"] = params[:3]
+    return tsir
