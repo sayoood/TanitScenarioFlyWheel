@@ -20,6 +20,7 @@ dependencies = [
     "typer>=0.20",
     "rich>=14.0",
     "jsonschema>=4.25",
+    "matplotlib>=3.10",
 ]
 
 [project.optional-dependencies]

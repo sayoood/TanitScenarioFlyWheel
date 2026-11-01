@@ -82,5 +82,29 @@ def closedloop(scenario: Path, policy: str = "const_vel", out: Path = Path("runs
     print(summary)
 
 
+@app.command()
+def augment(scenario: Path, out: Path = Path("runs/aug"), n_seed: int = 32, n_iter: int = 4, n_per_iter: int = 16):
+    """Coverage + criticality-guided behavioural augmentation over the TSIR logical parameters."""
+    from tsf.augment.search import Augmenter, plot_coverage
+    from tsf.compile import xodr
+    from tsf.sim import odr
+
+    sc = load_scenario(scenario)
+    out.mkdir(parents=True, exist_ok=True)
+    m = odr.load(xodr.write(sc, out / f"{sc.meta.id}.xodr"))
+    aug = Augmenter(sc, m)
+    t0 = time.perf_counter()
+    res = aug.run(n_seed, n_iter, n_per_iter)
+    dt = time.perf_counter() - t0
+    for v in res.kept:
+        (out / f"{v.tsir['meta']['id']}.json").write_text(json.dumps(v.tsir, indent=1))
+    plot_coverage(res, aug, out / "coverage.png")
+    table = [{**v.values, "criticality": round(v.criticality, 3), "min_ttc": v.metrics.get("min_ttc"),
+              "max_decel": v.metrics.get("ego_max_decel")} for v in sorted(res.kept, key=lambda v: -v.criticality)]
+    summ = {**res.summary(), "seconds": round(dt, 1), "sims_per_s": round(res.sims / dt, 1), "top": table[:8]}
+    (out / "augment.json").write_text(json.dumps(summ, indent=2))
+    print(summ)
+
+
 if __name__ == "__main__":
     app()
