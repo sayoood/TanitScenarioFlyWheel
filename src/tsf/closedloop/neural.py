@@ -61,10 +61,12 @@ class Recorder:
 
 
 class CosmosSensors:
-    def __init__(self, tsir: dict, out: Path, cams: list[str], res: str = "480", captions: dict | None = None):
+    def __init__(self, tsir: dict, out: Path, cams: list[str], res: str = "480", captions: dict | None = None,
+                 dry: bool = False):
         from tsf.cosmos.llm_captions import llm_captions
-        self.tsir, self.out, self.cams, self.res = tsir, out, cams, res
-        self.caps = captions or llm_captions(tsir, cams, frames=CHUNK, fps=FPS)
+        self.tsir, self.out, self.cams, self.res, self.dry = tsir, out, cams, res, dry
+        self.caps = captions or ({} if dry else llm_captions(tsir, cams, frames=CHUNK, fps=FPS))
+        (out / "gen").mkdir(parents=True, exist_ok=True)
         (out / "captions.json").write_text(json.dumps(self.caps, indent=1))
         self.last: dict[str, str] | None = None
         self.k, self.timing = 0, []
@@ -78,8 +80,14 @@ class CosmosSensors:
         root = rds_hq.export_clip(sim, log, self.out / "rds", cid, t0=t0, duration=CHUNK / FPS, cameras=self.cams,
                                   overwrite=True)
         t_exp = time.perf_counter() - tic
-        wsm.render_wsm(root, cid, self.out / "wsm" / cid, self.cams)
+        ctrl = wsm.render_wsm(root, cid, self.out / "wsm" / cid, self.cams)
         t_wsm = time.perf_counter() - tic - t_exp
+        if self.dry:                                 # plumbing test: the policy sees the WSM controls themselves
+            self.k += 1
+            self.timing.append({"chunk": k, "t_world": round(t_end, 3), "export_s": round(t_exp, 1),
+                                "wsm_s": round(t_wsm, 1)})
+            return {c: cv2.cvtColor(cv2.imread(str(generate.extract_frame(p, self.out / "gen" / f"{cid}_{c}.png", -1))),
+                                    cv2.COLOR_BGR2RGB) for c, p in ctrl.items()}
         r = generate.sim_chunk(self.out / "wsm" / cid, self.out / "gen" / cid, self.cams, frames=CHUNK, res=self.res,
                                captions=self.caps, first_frames=self.last, seed=k, scenario=self.tsir["meta"]["id"])
         self.last = r["last_frames"]
@@ -92,7 +100,7 @@ class CosmosSensors:
 
 
 def run_t1(tsir: dict, policy, out: str | Path, seconds: float | None = None, cams: list[str] = REFE_CAMS,
-           res: str = "480") -> ClosedLoopResult:
+           res: str = "480", dry: bool = False) -> ClosedLoopResult:
     from tsf.compile import xodr
     from tsf.sim import odr
     out = Path(out)
@@ -103,7 +111,7 @@ def run_t1(tsir: dict, policy, out: str | Path, seconds: float | None = None, ca
     xodr_path = out / f"{sc.meta.id}.xodr"
     xodr.write(sc, xodr_path)
     sim = TanitSim(sc, odr.load(xodr_path), ego_policy=policy)
-    sensors = CosmosSensors(tsir, out, cams, res)
+    sensors = CosmosSensors(tsir, out, cams, res, dry=dry)
     rec = Recorder(sim)
     n = int(round(sc.duration / sim.dt)) + 1
     chunk_s = (CHUNK - 1) / FPS
@@ -138,11 +146,12 @@ def main():
     ap.add_argument("--out", default="runs/t1")
     ap.add_argument("--res", default="480")
     ap.add_argument("--cams", default=",".join(REFE_CAMS))
+    ap.add_argument("--dry", action="store_true", help="no Cosmos: feed the WSM controls (plumbing test)")
     a = ap.parse_args()
     tsir = json.loads(Path(a.scenario).read_text())
     out = Path(a.out)
     pol = RefePolicy(fallback="const_vel")
-    r = run_t1(tsir, pol, out, a.seconds, a.cams.split(","), a.res)
+    r = run_t1(tsir, pol, out, a.seconds, a.cams.split(","), a.res, dry=a.dry)
     from tsf.sim.render2d import render_video
     render_video(r.sim, r.log, out / "t1_bev.mp4", title=f"T1 closed loop: REFe SFT-4 on Cosmos3-Nano-Sim-Auto, "
                                                            f"EPDMS {r.score['EPDMS']:.2f}")
