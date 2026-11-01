@@ -4,3 +4,4 @@
 - Place NPCs so that they do not overlap at t = 0. Keep at least the vehicle length plus 5 m between vehicles in the same lane.
 - Fill unspecified values with explicit, typical assumptions. The analysis step records them.
 - Output only the TSIR JSON object: no commentary.
+- Before finalizing, simulate the ego trajectory and verify that all required maneuvers (turns, stops) are completed within the simulation duration and that the ego's initial position and speed satisfy all explicit assertions (e.g., stop lines, speed limits).
