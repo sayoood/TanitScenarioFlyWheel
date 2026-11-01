@@ -1,22 +1,28 @@
-"""TSIR road network -> ASAM OpenDRIVE (.xodr) via scenariogeneration.
+"""TSIR road network -> ASAM OpenDRIVE 1.8 (.xodr), own writer (exact, link-continuous geometry).
 
-Conventions (shared with xosc.py and TanitSim):
+Conventions (shared with xosc.py, osc2.py and TanitSim):
 - linear road: road id 0, forward lanes = right lanes (-1..-n), backward lanes = left lanes (+1..+n).
-- junction arm i: road id i, reference line starts at the junction and points outward along
+- junction arm i: road id i, reference line starts on the junction boundary and points outward along
   `heading_deg`; inbound lanes = left lanes (+1 innermost), outbound lanes = right lanes (-1 innermost).
-  TSIR `s` on an inbound lane is the distance to the stop line, which equals road s.
+  TSIR `s` on an inbound lane is the distance to the stop line (= road s).
+- connecting roads (ids JUNCTION_ID+1..): one lane (-1); reference line on the lane's left border;
+  geometry = cubic Hermite paramPoly3 (normalized) between the exact lane-border points of both arms.
 """
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from pathlib import Path
 
-from scenariogeneration import xodr
+import numpy as np
+from lxml import etree
 
 from tsf.ir.scenario import Junction, LinearRoad, Scenario
+from tsf.sim.odr import Geometry
 
 JUNCTION_ID = 1000
 SIGNAL_ID_BASE = 5000  # signal id of arm i = SIGNAL_ID_BASE + i
+CONTROLLER_ID = 9000
 
 
 def turn_target(approaches, i: int, turn: str) -> int | None:
@@ -55,66 +61,209 @@ def lane_movements(sc: Scenario) -> list[tuple[int, int, int, int, str]]:
     return out
 
 
-def _linear(road: LinearRoad) -> xodr.OpenDrive:
-    geoms = []
+# ----------------------------------------------------------------------------- xml helpers
+def _f(v: float) -> str:
+    return f"{v:.9g}"
+
+
+def _sub(parent, tag, **attrs):
+    return etree.SubElement(parent, tag, {k.rstrip("_"): (v if isinstance(v, str) else _f(v)) for k, v in attrs.items()})
+
+
+def _lane(parent, lid: int, width: float, mark: str, color: str = "standard", pred=None, succ=None):
+    ln = _sub(parent, "lane", id=str(lid), type="driving", level="false")
+    if pred is not None or succ is not None:
+        lk = _sub(ln, "link")
+        if pred is not None:
+            _sub(lk, "predecessor", id=str(pred))
+        if succ is not None:
+            _sub(lk, "successor", id=str(succ))
+    _sub(ln, "width", sOffset=0.0, a=width, b=0.0, c=0.0, d=0.0)
+    if mark != "none":
+        _sub(ln, "roadMark", sOffset=0.0, type=mark, weight="standard", color=color, width=0.12,
+             laneChange="none" if mark == "solid" else "both")
+    return ln
+
+
+def _road(root, rid: str, length: float, junction: str, kph: float | None):
+    r = _sub(root, "road", name=f"road_{rid}", id=rid, length=length, junction=junction, rule="RHT")
+    return r
+
+
+def _road_type(r, kph: float):
+    t = _sub(r, "type", s=0.0, type="town" if kph <= 60 else "motorway")
+    _sub(t, "speed", max=kph, unit="km/h")
+
+
+def _geometry(pv, g: Geometry):
+    ge = _sub(pv, "geometry", s=g.s, x=g.x, y=g.y, hdg=g.hdg, length=g.length)
+    if g.kind == "line":
+        _sub(ge, "line")
+    elif g.kind == "arc":
+        _sub(ge, "arc", curvature=g.p["curvature"])
+    elif g.kind == "spiral":
+        _sub(ge, "spiral", curvStart=g.p["curvStart"], curvEnd=g.p["curvEnd"])
+    else:
+        _sub(ge, "paramPoly3", pRange="normalized", **{k: g.p[k] for k in
+             ("aU", "bU", "cU", "dU", "aV", "bV", "cV", "dV")})
+
+
+def _header(name: str):
+    root = etree.Element("OpenDRIVE")
+    _sub(root, "header", revMajor="1", revMinor="8", name=name, version="1.0",
+         date=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"), vendor="Tanit Scenario Flywheel")
+    return root
+
+
+def _lanes_block(r, left: list[tuple], right: list[tuple]):
+    """left/right: [(width, mark, pred, succ), ...] innermost first."""
+    lanes = _sub(r, "lanes")
+    sec = _sub(lanes, "laneSection", s=0.0)
+    if left:
+        L = _sub(sec, "left")
+        for k in range(len(left), 0, -1):
+            w, mark, p, s_ = left[k - 1]
+            _lane(L, k, w, mark, pred=p, succ=s_)
+    C = _sub(sec, "center")
+    c = _sub(C, "lane", id="0", type="none", level="false")
+    if left and right:
+        _sub(c, "roadMark", sOffset=0.0, type="solid", weight="standard", color="yellow", width=0.15,
+             laneChange="none")
+    if right:
+        R = _sub(sec, "right")
+        for k in range(1, len(right) + 1):
+            w, mark, p, s_ = right[k - 1]
+            _lane(R, -k, w, mark, pred=p, succ=s_)
+
+
+def _marks(n: int) -> list[str]:
+    return ["broken"] * (n - 1) + ["solid"] if n else []
+
+
+# ----------------------------------------------------------------------------- linear road
+def _linear(sc: Scenario) -> etree._Element:
+    road: LinearRoad = sc.road
+    root = _header("tsf_linear")
+    geoms, s, x, y, h = [], 0.0, 0.0, 0.0, 0.0
     for seg in road.segments:
         if seg.kind == "line":
-            geoms.append(xodr.Line(seg.length))
+            g = Geometry(s, x, y, h, seg.length, "line", {})
         elif seg.kind == "arc":
-            geoms.append(xodr.Arc(seg.curvature_start, length=seg.length))
+            g = Geometry(s, x, y, h, seg.length, "arc", {"curvature": seg.curvature_start})
         else:
-            geoms.append(xodr.Spiral(seg.curvature_start, seg.curvature_end, length=seg.length))
-    left = road.backward.driving_lanes if road.backward else 0
-    r = xodr.create_road(geoms, id=0, left_lanes=left, right_lanes=road.forward.driving_lanes,
-                         lane_width=road.forward.lane_width)
-    _speed(r, road.speed_limit_kph)
-    odr = xodr.OpenDrive("tsf_linear")
-    odr.add_road(r)
-    odr.adjust_roads_and_lanes()
-    return odr
-
-
-def _speed(r, kph: float):
-    try:
-        r.add_type(xodr.RoadType.town if kph <= 60 else xodr.RoadType.motorway, s=0, speed=kph / 3.6)
-    except Exception:  # older/newer API variants: speed is optional metadata for us
+            g = Geometry(s, x, y, h, seg.length, "spiral", {"curvStart": seg.curvature_start,
+                                                           "curvEnd": seg.curvature_end})
+        geoms.append(g)
+        ex, ey, eh = g.eval(np.array([seg.length]))
+        s, x, y, h = s + seg.length, float(ex[0]), float(ey[0]), float(eh[0])
+    r = _road(root, "0", s, "-1", road.speed_limit_kph)
+    _road_type(r, road.speed_limit_kph)
+    pv = _sub(r, "planView")
+    for g in geoms:
+        _geometry(pv, g)
+    fw, bw = road.forward, road.backward
+    right = [(fw.lane_width, m, None, None) for m in _marks(fw.driving_lanes)]
+    left = [(bw.lane_width, m, None, None) for m in _marks(bw.driving_lanes)] if bw else []
+    if not left:  # one-way carriageway: leftmost forward lane gets a solid inner edge via centre lane mark
         pass
+    _lanes_block(r, left, right)
+    return root
 
 
-def _junction(sc: Scenario) -> xodr.OpenDrive:
-    road: Junction = sc.road
-    roads = []
-    for i, ap in enumerate(road.approaches):
-        r = xodr.create_road(xodr.Line(ap.length), id=i, left_lanes=ap.inbound.driving_lanes,
-                             right_lanes=ap.outbound.driving_lanes, lane_width=ap.inbound.lane_width)
-        _speed(r, ap.speed_limit_kph)  # junction predecessor link is set by CommonJunctionCreator
-        if road.signalized:
-            # one dynamic signal head facing inbound traffic at the stop line (left side of ref line)
-            t = ap.inbound.driving_lanes * ap.inbound.lane_width + 1.0
-            r.add_signal(xodr.Signal(s=0.5, t=t, country="DEU", Type="1000001", subtype="-1",
-                                     dynamic=xodr.Dynamic.yes, orientation=xodr.Orientation.negative,
-                                     zOffset=2.5, height=0.9, width=0.35, id=SIGNAL_ID_BASE + i,
-                                     name=f"tl_arm{i}"))
-        roads.append(r)
-    radius = road.corner_radius + max(a.inbound.driving_lanes + a.outbound.driving_lanes
-                                      for a in road.approaches) * 3.5 / 2
-    jc = xodr.CommonJunctionCreator(id=JUNCTION_ID, name="tsf_junction", startnum=JUNCTION_ID + 1)
-    for i, ap in enumerate(road.approaches):
-        jc.add_incoming_road_circular_geometry(road=roads[i], radius=radius,
-                                               angle=math.radians(ap.heading_deg), road_connection="predecessor")
-    for fi, fl, ti, tl, _turn in lane_movements(sc):
-        jc.add_connection(road_one_id=fi, road_two_id=ti, lane_one_id=fl, lane_two_id=-tl)
-    odr = xodr.OpenDrive("tsf_junction")
-    for r in roads:
-        odr.add_road(r)
-    odr.add_junction_creator(jc)
-    odr.adjust_roads_and_lanes()
-    return odr
+# ----------------------------------------------------------------------------- junction
+def _hermite(p0, h0, p1, h1) -> tuple[float, dict]:
+    """Normalized cubic Hermite paramPoly3 in the local frame of (p0, h0); returns (arc length, coeffs)."""
+    d = np.asarray(p1) - np.asarray(p0)
+    c, s = math.cos(-h0), math.sin(-h0)
+    du, dv = c * d[0] - s * d[1], s * d[0] + c * d[1]
+    dh = math.remainder(h1 - h0, 2 * math.pi)
+    chord = math.hypot(du, dv)
+    k = chord * (1.0 + 0.27 * abs(dh) / (math.pi / 2))  # tangent scale ~ circular-arc fit
+    t0u, t0v = k, 0.0
+    t1u, t1v = k * math.cos(dh), k * math.sin(dh)
+    coef = {"aU": 0.0, "bU": t0u, "cU": 3 * du - 2 * t0u - t1u, "dU": t0u + t1u - 2 * du,
+            "aV": 0.0, "bV": t0v, "cV": 3 * dv - 2 * t0v - t1v, "dV": t0v + t1v - 2 * dv}
+    p = np.linspace(0, 1, 401)
+    u = coef["bU"] * p + coef["cU"] * p ** 2 + coef["dU"] * p ** 3
+    v = coef["bV"] * p + coef["cV"] * p ** 2 + coef["dV"] * p ** 3
+    return float(np.sum(np.hypot(np.diff(u), np.diff(v)))), coef
 
 
-def build(sc: Scenario) -> xodr.OpenDrive:
+def _junction(sc: Scenario) -> etree._Element:
+    J: Junction = sc.road
+    root = _header("tsf_junction")
+    max_half = max(max(a.inbound.driving_lanes * a.inbound.lane_width, a.outbound.driving_lanes * a.outbound.lane_width)
+                   for a in J.approaches)
+    R = J.corner_radius + max_half
+    arms = []
+    for i, ap in enumerate(J.approaches):
+        h = math.radians(ap.heading_deg)
+        arms.append((R * math.cos(h), R * math.sin(h), h))
+    moves = lane_movements(sc)
+    conn_ids = {}
+    for n, mv in enumerate(moves):
+        conn_ids[mv] = JUNCTION_ID + 1 + n
+    # arm roads
+    for i, ap in enumerate(J.approaches):
+        x, y, h = arms[i]
+        r = _road(root, str(i), ap.length, "-1", ap.speed_limit_kph)
+        lk = _sub(r, "link")
+        _sub(lk, "predecessor", elementType="junction", elementId=str(JUNCTION_ID))
+        _road_type(r, ap.speed_limit_kph)
+        pv = _sub(r, "planView")
+        _geometry(pv, Geometry(0.0, x, y, h, ap.length, "line", {}))
+        left = [(ap.inbound.lane_width, m, None, None) for m in _marks(ap.inbound.driving_lanes)]
+        right = [(ap.outbound.lane_width, m, None, None) for m in _marks(ap.outbound.driving_lanes)]
+        _lanes_block(r, left, right)
+        if J.signalized:
+            sg = _sub(r, "signals")
+            _sub(sg, "signal", s=0.5, t=ap.inbound.driving_lanes * ap.inbound.lane_width + 1.0,
+                 id=str(SIGNAL_ID_BASE + i), name=f"tl_arm{i}", dynamic="yes", orientation="-", zOffset=2.5,
+                 country="DE", type="1000001", subtype="-1", height=0.9, width=0.35)
+    # connecting roads
+    for mv, cid in conn_ids.items():
+        fi, fl, ti, tl, turn = mv
+        ai, aj = J.approaches[fi], J.approaches[ti]
+        xi, yi, hi = arms[fi]
+        xj, yj, hj = arms[ti]
+        w = ai.inbound.lane_width
+        # start: left border (driver's view) of inbound lane fl = arm-i border at t=(fl-1)w, heading into junction
+        t0 = (fl - 1) * ai.inbound.lane_width
+        p0 = (xi - math.sin(hi) * t0, yi + math.cos(hi) * t0)
+        h0 = hi + math.pi
+        # end: left border of outbound lane tl = arm-j border at t=-(tl-1)w, heading outward
+        t1 = -(tl - 1) * aj.outbound.lane_width
+        p1 = (xj - math.sin(hj) * t1, yj + math.cos(hj) * t1)
+        length, coef = _hermite(p0, h0, p1, hj)
+        r = _road(root, str(cid), length, str(JUNCTION_ID), ai.speed_limit_kph)
+        lk = _sub(r, "link")
+        _sub(lk, "predecessor", elementType="road", elementId=str(fi), contactPoint="start")
+        _sub(lk, "successor", elementType="road", elementId=str(ti), contactPoint="start")
+        _road_type(r, ai.speed_limit_kph)
+        pv = _sub(r, "planView")
+        _geometry(pv, Geometry(0.0, p0[0], p0[1], h0, length, "paramPoly3", coef))
+        _lanes_block(r, [], [(w, "none", fl, -tl)])
+        r.find("lanes/laneSection/center/lane").set("type", "none")
+    jn = _sub(root, "junction", id=str(JUNCTION_ID), name="tsf_junction", type="default")
+    for n, (mv, cid) in enumerate(conn_ids.items()):
+        fi, fl, *_ = mv
+        c = _sub(jn, "connection", id=str(n), incomingRoad=str(fi), connectingRoad=str(cid), contactPoint="start")
+        _sub(c, "laneLink", **{"from": str(fl), "to": "-1"})
+    if J.signalized:
+        for i in range(len(J.approaches)):
+            _sub(jn, "controller", id=str(CONTROLLER_ID + i), type="0", sequence=str(i))
+            ctl = _sub(root, "controller", id=str(CONTROLLER_ID + i), name=f"ctrl_arm{i}", sequence=str(i))
+            _sub(ctl, "control", signalId=str(SIGNAL_ID_BASE + i), type="0")
+    # ASAM schema order: header, road*, controller*, junction*
+    for ctl in root.findall("controller"):
+        root.remove(ctl)
+        root.insert(list(root).index(jn), ctl)
+    return root
+
+
+def build(sc: Scenario) -> etree._Element:
     if isinstance(sc.road, LinearRoad):
-        return _linear(sc.road)
+        return _linear(sc)
     if isinstance(sc.road, Junction):
         return _junction(sc)
     raise NotImplementedError("opendrive_file roads are loaded, not compiled")
@@ -126,5 +275,5 @@ def write(sc: Scenario, path: str | Path) -> Path:
     if getattr(sc.road, "type", None) == "opendrive_file":
         path.write_bytes(Path(sc.road.path).read_bytes())
     else:
-        build(sc).write_xml(str(path))
+        etree.ElementTree(build(sc)).write(str(path), pretty_print=True, xml_declaration=True, encoding="UTF-8")
     return path

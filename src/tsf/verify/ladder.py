@@ -13,6 +13,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import numpy as np
 from lxml import etree
 from pydantic import ValidationError
 
@@ -121,6 +122,15 @@ def l2_lane_graph(sc: Scenario, m) -> list[Finding]:
     from tsf.sim.engine import lane_turn
 
     out = []
+    gaps = []
+    for k, ln in m.lanes.items():
+        for s in ln.successors:
+            g = float(np.hypot(*(ln.xy[-1] - m.lanes[s].xy[0])))
+            if g > 0.1:
+                gaps.append(f"{k}->{s}: {g:.2f} m")
+    out.append(Finding("L2", "link_continuity", not gaps,
+                       f"{len(gaps)} discontinuous lane link(s): " + "; ".join(gaps[:6]) if gaps else "",
+                       {"gaps": gaps[:50]}))
     if isinstance(sc.road, Junction):
         missing = []
         for fi, fl, ti, tl, turn in lane_movements(sc):
