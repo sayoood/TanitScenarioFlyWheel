@@ -59,5 +59,28 @@ def verify(scenario: Path, out: Path = Path("runs/verify"), qc: bool = True, vid
            "timing": rep.timing})
 
 
+@app.command()
+def closedloop(scenario: Path, policy: str = "const_vel", out: Path = Path("runs/cl"), video: bool = True):
+    """Tier-T0 closed loop: TanitSim world + policy-driven ego (const_vel | accel_decel)."""
+    from tsf.closedloop import runner
+    from tsf.compile import xodr
+    from tsf.sim import odr
+
+    sc = load_scenario(scenario)
+    out.mkdir(parents=True, exist_ok=True)
+    m = odr.load(xodr.write(sc, out / f"{sc.meta.id}.xodr"))
+    pol = {"const_vel": runner.ConstantVelocity, "accel_decel": runner.AccelDecel}[policy]()
+    t0 = time.perf_counter()
+    res = runner.run(sc, m, pol)
+    dt = time.perf_counter() - t0
+    if video:
+        from tsf.sim.render2d import render_video
+        render_video(res.sim, res.log, out / f"{policy}.mp4", title=f"Closed loop [{policy}]  {sc.meta.title}"[:80])
+    summary = {"policy": policy, "score": res.score, "metrics": res.log.metrics, "sim_s": round(dt, 2),
+               "realtime_factor": round(sc.duration / dt, 1)}
+    (out / f"{policy}.json").write_text(json.dumps(summary, indent=2))
+    print(summary)
+
+
 if __name__ == "__main__":
     app()
