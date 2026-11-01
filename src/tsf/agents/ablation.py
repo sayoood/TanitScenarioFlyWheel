@@ -1,7 +1,8 @@
 """Ablation: iterative Qwen3.8 agentic lifting + Harness² vs. one-shot, non-improving baselines.
 
 Same model, same grammar-constrained decoding, same verifier (L0-L3, ASAM QC off for all) in every condition:
-  A  one_shot        bare system prompt + request -> TSIR (no harness, skills, analysis or repair)
+  A  one_shot        schema-prompted one call: system prompt + full TSIR JSON schema + request (no harness,
+                     skills, analysis or repair)
   B  one_shot_h0     seed-harness system prompt + relevance-ranked skills, one call
   C  agentic_h0      analyse -> propose with the seed harness (first attempt of D)
   D  agentic_rep_h0  C + verifier-guided minimal-edit repair (<= max_repairs)
@@ -213,7 +214,11 @@ def run_job(cond: str, qi: int, rep_i: int) -> list[dict]:
     t0 = time.perf_counter()
     if cond in ("A", "B"):
         if cond == "A":
-            msgs = [{"role": "system", "content": BARE},
+            msgs = [{"role": "system", "content": BARE + "
+
+TSIR JSON schema:
+" +
+                     json.dumps(lif._tsir_schema, separators=(",", ":"))},
                     {"role": "user", "content": f"Use meta.id = \"{sid}\".\nRequest:\n{q}"}]
         else:
             msgs = [{"role": "system", "content": lif.h.system(q)},
