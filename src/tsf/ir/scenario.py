@@ -265,9 +265,12 @@ class Assertion(_M):
         "ego_speed_between", "ego_reaches_s", "red_light_respected", "max_decel_below",
     ]
     actor: str = "ego"
-    value: float | None = None
-    value2: float | None = None
-    label: str | None = None
+    value: float | None = Field(None, description="min_ttc_above: s; ego_lane_change: net lane changes to the left "
+                                "(negative = right, default 1); max_decel_below: m/s2; ego_speed_between: lower bound "
+                                "m/s; ego_reaches_s: distance in m")
+    value2: float | None = Field(None, description="ego_speed_between: upper bound m/s")
+    label: str | None = Field(None, description="ego_turn: the turn direction, exactly 'left', 'right' or "
+                              "'straight'; otherwise unused")
 
 
 # --------------------------------------------------------------------------- logical parameters
