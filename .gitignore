@@ -1,0 +1,35 @@
+# Secrets: never commit
+Keys.txt
+*.key
+*.pem
+.env
+.env.*
+
+# Data and generated artifacts live on thor3 only (Audi recording + derived renders never leave the Thor)
+data/
+runs/
+outputs/
+artifacts/
+models/
+*.mp4
+*.mcap
+*.safetensors
+*.gguf
+
+# Python / Node / LaTeX build output
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+node_modules/
+.next/
+report/build/
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+desktop.ini
