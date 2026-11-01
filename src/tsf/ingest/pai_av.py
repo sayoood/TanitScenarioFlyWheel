@@ -352,7 +352,9 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
     ego_k = np.round((ego_sd[i0:, 1] - ego_d0) / W)
     n_left = int(max([0] + [k for k in same if k > 0] + list(ego_k[ego_k > 0])))
     n_right = int(max([0] + [-k for k in same if k < 0] + list(-ego_k[ego_k < 0])))
-    n_fwd = min(6, n_left + n_right + 1)
+    n_left = min(n_left, 5)                          # at most 6 lanes per direction, ego lane always inside
+    n_right = min(n_right, 5 - n_left)
+    n_fwd = n_left + n_right + 1
     n_bwd = int(min(6, max([0] + opp)))
     ego_lane = n_left + 1
     s_off = ref.back                                  # road s = reference s + back
