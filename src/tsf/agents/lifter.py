@@ -260,6 +260,8 @@ class Lifter:
             raw.setdefault("meta", {})["id"] = sid
             stage("propose" if i == 0 else "repair", "ok", f"attempt {i}")
             stage("verify", "running", f"attempt {i}")
+            (wd / f"attempt{i}").mkdir(parents=True, exist_ok=True)
+            (wd / f"attempt{i}" / "tsir.json").write_text(json.dumps(raw, indent=1), encoding="utf-8")
             rep = ladder.run(raw, wd / f"attempt{i}", qc=qc)
             attempts.append(Attempt(raw, rep, time.perf_counter() - ta))
             stage("verify", "ok" if rep.passed else "failed", rep.diagnostics()[:300])
