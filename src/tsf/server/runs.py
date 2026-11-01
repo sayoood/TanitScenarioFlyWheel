@@ -24,6 +24,7 @@ KIND = {".xodr": "xodr", ".xosc": "xosc", ".osc": "osc2", ".mp4": "video", ".png
 _LIFT = ["analyse", "propose", "verify", "repair", "document"]
 _DOWN = ["simulate", "augment", "closed_loop"]
 STAGES = {"uc1": _LIFT + _DOWN, "uc3": ["brief"] + _LIFT + ["twin"] + _DOWN,
+          "uc2": ["vipe", "scene"] + _LIFT + _DOWN,
           "uc4": ["lift", "verify", "analyse", "document"] + _DOWN,
           "uc5": ["lift", "verify", "twin", "analyse", "document"] + _DOWN}
 
@@ -348,4 +349,14 @@ def uc5(ctx: Ctx):
     downstream(ctx, tsir, rep)
 
 
-PIPELINES = {"uc1": uc1, "uc3": uc3, "uc4": uc4, "uc5": uc5}
+def uc2(ctx: Ctx):
+    """Dash-cam video -> ViPE ego motion + VLM scene description -> Lifter -> UC1 downstream."""
+    from tsf.agents.video import lift_video
+    out = lift_video(ctx.run["input"]["video"], ctx.dir / "uc2", on_stage=ctx.stage)
+    tsir, rep = _adopt_lift(ctx, out["result"], ctx.dir / "uc2" / "lift")
+    ctx.run["kpis"].update(**{f"uc2_{k}": v for k, v in out["fidelity"].items()}, **out["timing"])
+    ctx.run["uc2"] = {"ego": out["ego"], "scene": out["scene"], "query": out["query"]}
+    downstream(ctx, tsir, rep)
+
+
+PIPELINES = {"uc1": uc1, "uc2": uc2, "uc3": uc3, "uc4": uc4, "uc5": uc5}
