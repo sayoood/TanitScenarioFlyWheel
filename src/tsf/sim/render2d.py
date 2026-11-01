@@ -485,9 +485,11 @@ class Renderer:
             A.fill(img, _local(x, y, yaw, _rrect_local(0.22, 0.42, 0.08) + (l / 2 - 0.12, side * (w / 2 - 0.3))), hl, off)
             A.fill(img, _local(x, y, yaw, _rrect_local(0.2, 0.4, 0.08) + (-l / 2 + 0.11, side * (w / 2 - 0.3))), tl, off)
         if acc < -0.8:
+            ov = img.copy()
             for side in (1, -1):
-                c = A.px(_local(x, y, yaw, np.array([(-l / 2 - 0.2, side * (w / 2 - 0.3))])))[0] - off
-                cv2.circle(img, tuple(c.astype(int)), int(0.7 * A.ppm), bgr(P["brake"]), -1, cv2.LINE_AA)
+                c = A.px(_local(x, y, yaw, np.array([(-l / 2 - 0.05, side * (w / 2 - 0.3))])))[0] - off
+                cv2.circle(ov, tuple(c.astype(int)), max(2, int(0.38 * A.ppm)), bgr(P["brake"]), -1, cv2.LINE_AA)
+            cv2.addWeighted(ov, 0.45, img, 0.55, 0, img)
         if ind_state and blink:
             for fx in (l / 2 - 0.15, -l / 2 + 0.15):
                 c = A.px(_local(x, y, yaw, np.array([(fx, ind_state * (w / 2 + 0.05))])))[0] - off
