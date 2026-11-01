@@ -208,7 +208,7 @@ class Lifter:
                  "assumptions and quantify every missing value (speeds, positions, timings) with its source; give "
                  "the governing equations (TTC, safe distance, required deceleration...).\n\nRequest:\n" + query}]
         return self.llm.chat(msgs, schema=Analysis.model_json_schema(), role="analyst",
-                             temperature=self.h.knobs()["temperature"])
+                             temperature=self.h.knobs()["temperature"], max_tokens=4096)
 
     def propose(self, query: str, analysis: dict, sid: str) -> list[dict]:
         sys = self.h.system(query)

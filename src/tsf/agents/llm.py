@@ -44,8 +44,8 @@ class LLM:
         extra: dict = {"chat_template_kwargs": {"enable_thinking": thinking}}
         if schema is not None:
             # compact JSON grammar: free whitespace lets the model fall into endless newline loops
+            # (no repetition penalty: it penalises JSON's own structural tokens and derails long outputs)
             extra["structured_outputs"] = {"json": schema, "disable_any_whitespace": True}
-            extra["repetition_penalty"] = 1.03
         for attempt in range(retries + 1):
             t0 = time.perf_counter()
             try:
