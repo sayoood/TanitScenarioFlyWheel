@@ -31,7 +31,9 @@
   \newcommand{\ResultsKPI}{\todo{run make\_results.py}}%
   \newcommand{\ResultsCosmos}{\todo{run make\_results.py}}%
   \newcommand{\ResultsUCtwo}{\todo{run make\_results.py}}%
-  \newcommand{\ResultsUCfourfive}{\todo{run make\_results.py}}}
+  \newcommand{\ResultsUCfourfive}{\todo{run make\_results.py}}%
+  \newcommand{\ResultsAblation}{\todo{run make\_results.py}}}
+\providecommand{\ResultsAblation}{\todo{ablation pending}}
 
 \title{\vspace{-1.2em}\textbf{\tsf}\\[0.3em]
 \large An agentic, verifier-driven pipeline from scenario sources to multi-camera world-model data\\
@@ -256,6 +258,40 @@ lessons stay \emph{candidate} until a human activates them in the UI.
 \State \textbf{Compose}: adopt the best edit if $\Delta\text{score} > \epsilon$ and no regression; log revision + evidence
 \end{algorithmic}
 \end{algorithm}
+
+%=====================================================================================================
+\section{Ablation: iterative agents and Harness$^2$ vs.\ one-shot prompting}\label{sec:ablation}
+Does the agentic machinery earn its latency? We decompose it into five conditions. All use the same model
+(Qwen3.8-27B NVFP4), the same grammar-constrained decoding, the same temperature and the same verifier
+(L0--L3, ASAM QC off for all):
+\begin{description}[leftmargin=2.2em,style=sameline,itemsep=0pt]
+\item[A] \emph{one-shot}: one call with a system prompt, the full TSIR JSON schema and the request. There is
+  no harness, no skills, no analysis and no repair; this is the usual "schema + prompt" baseline.
+\item[B] \emph{one-shot + seed harness}: one call with the seed harness (system prompt, authoring guide,
+  guardrails) and relevance-ranked verified skills.
+\item[C] \emph{agentic}: analyst $\to$ proposer with the seed harness. This is the first attempt of D.
+\item[D] \emph{agentic + repair}: C plus verifier-guided minimal-edit repair ($\le$ the repair budget).
+\item[E$_0$/E] C/D with the \emph{Harness$^2$-evolved} harness (frozen weights; only the harness changed).
+\end{description}
+Validity alone rewards trivial scenarios: a model that drops the turn or the cut-in still passes L3 on its
+own assertions. Each query therefore carries deterministic \emph{intent checks}, evaluated on the TSIR and
+on the simulated trajectory. They cover road type, signalisation, lane count, required actor categories
+and NPC actions, environment (time of day, weather), commanded ego speed, and the ego manoeuvres
+\emph{actually executed} in TanitSim (lane change direction, turn direction, stop) with no collision.
+A run is \emph{correct} if it is L3-valid and passes every intent check. The 12 queries comprise the six
+Harness$^2$ probes and six \emph{held-out} queries that the evolver never saw (overtaking a cyclist at
+night in rain, a motorway cut-in at 120\,km/h, a right turn yielding to a pedestrian at dusk, stop-and-go
+following, yielding at an unsignalised junction, passing a broken-down truck in fog), each repeated
+twice. Rates come with 95\,\% Wilson intervals. ``wins/losses'' counts the paired (query, repetition)
+cases that a condition gets right and A gets wrong, and vice versa.
+
+\ResultsAblation
+
+\IfFileExists{figs/ablation.png}{\begin{figure}[h]\centering
+\includegraphics[width=0.9\linewidth]{figs/ablation.png}
+\caption{Correct rate (L3-valid and every intent check passed) per condition, probe vs.\ held-out queries,
+with 95\,\% Wilson intervals; the dots give the cost in completion tokens per scenario.}\label{fig:ablation}
+\end{figure}}{}
 
 %=====================================================================================================
 \section{Augmentation}
