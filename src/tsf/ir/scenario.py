@@ -215,6 +215,8 @@ class LaneChange(_Action):
     direction: Literal["left", "right"]
     lanes: int = Field(1, ge=1, le=3)
     duration: float = Field(4.0, gt=0.5, le=15)
+    safe_gap: bool = Field(False, description="replayed drivers: wait up to 5 s for a safe gap in the target lane "
+                           "(MOBIL safety criterion), else skip the lane change; scripted timing when false")
 
 
 class FollowActor(_Action):

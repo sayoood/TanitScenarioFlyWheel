@@ -174,7 +174,7 @@ def speed_actions(aid: str, t: np.ndarray, v: np.ndarray, t0: float, tol: float 
     return acts
 
 
-def lane_actions(aid: str, t: np.ndarray, d: np.ndarray, t0: float) -> list[dict]:
+def lane_actions(aid: str, t: np.ndarray, d: np.ndarray, t0: float, safe_gap: bool = False) -> list[dict]:
     k = np.round(d / W).astype(int)
     acts, cur = [], k[0]
     for i in range(1, len(k)):
@@ -186,7 +186,7 @@ def lane_actions(aid: str, t: np.ndarray, d: np.ndarray, t0: float) -> list[dict
             acts.append({"id": f"{aid}_lc{len(acts)}", "type": "lane_change", "actor": aid,
                          "start": {"kind": "sim_time", "t": round(max(0.0, t[j] - t0), 2)},
                          "direction": "left" if k[i] > cur else "right", "lanes": int(abs(k[i] - cur)),
-                         "duration": round(dur, 1)})
+                         "duration": round(dur, 1), **({"safe_gap": True} if safe_gap else {})})
             cur = k[i]
     return acts
 
@@ -404,7 +404,7 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
             elif abs(np.median(off[:10])) > 0.4:              # moving but riding off-centre (e.g. a wide truck)
                 init["t_offset"] = round(float(np.clip(np.median(off[:10]), -2.5, 2.5)), 2)
             speed = max(0.0, float(np.median(v[:10])))
-            acts = (speed_actions(aid, ts, np.maximum(v, 0), t0) + lane_actions(aid, ts, sd[:, 1], t0)
+            acts = (speed_actions(aid, ts, np.maximum(v, 0), t0) + lane_actions(aid, ts, sd[:, 1], t0, safe_gap=True)
                     + (offset_actions(aid, ts, sd[:, 1], t0) if np.abs(v).max() >= 0.8 else []))
         cat = tr.cls if tr.cls in ("car", "truck", "bus", "van", "motorcycle", "bicycle", "pedestrian") else "car"
         if cat == "pedestrian":

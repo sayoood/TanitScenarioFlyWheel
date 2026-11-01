@@ -260,6 +260,7 @@ class TanitSim:
             self.agents[a.id] = ag
         self.actions = {act.id: act for act in sc.actions}
         self.started: dict[str, float] = {}
+        self._lc_wait: dict[str, float] = {}           # safe_gap lane changes waiting for a gap
         self.ended: dict[str, float] = {}
         self.events: list[dict] = []
         self._junction_conflicts = self._conflicts()
@@ -347,6 +348,53 @@ class TanitSim:
             self.events.append({"t": round(self.t, 3), "type": "action_end", "id": act_id, "actor": actor})
 
     # ---------------------------------------------------------------- lane changes
+    def _defer(self, act) -> bool:
+        """`safe_gap` lane changes (replayed drivers) wait until the target lane is safe: no vehicle within
+        2 m + 0.3 s ahead, and the follower there keeps 2 m + 0.5 s and needs <= 3 m/s2 to adapt (MOBIL b_safe).
+        After 5 s of waiting the lane change is dropped. A replayed lane change is otherwise timed to the logged
+        ego; once the ego deviates from the log (UC5 twins, closed loop) it could cut into the ego."""
+        if act.type != "lane_change" or not getattr(act, "safe_gap", False):
+            return False
+        ag = self.agents[act.actor]
+        if ag.path is None or ag.done or self._lc_safe(ag, act.direction, act.lanes):
+            self._lc_wait.pop(act.id, None)
+            return False
+        t0 = self._lc_wait.setdefault(act.id, self.t)
+        if self.t - t0 < 5.0:
+            return True
+        self.started[act.id] = self.t
+        self.events.append({"t": round(self.t, 3), "type": "lane_change_skipped_unsafe", "actor": ag.id, "id": act.id})
+        self._end_action(act.id, ag.id)
+        return True
+
+    def _lc_safe(self, ag: Agent, direction: str, n: int) -> bool:
+        key = ag.path.keys[ag.path.lane_index(ag.p)]
+        tgt = key
+        for _ in range(n):
+            nb = self.m.lanes[tgt].left if direction == "left" else self.m.lanes[tgt].right
+            if nb is None:
+                break
+            tgt = nb
+        if tgt == key:
+            return True                                        # impossible: _begin_lane_change reports it
+        ln = self.m.lanes[tgt]
+        p0 = float(ln.cum[int(np.hypot(ln.xy[:, 0] - ag.x, ln.xy[:, 1] - ag.y).argmin())])
+        for o in self.agents.values():
+            if o is ag or o.done or o.path is None or math.hypot(o.x - ag.x, o.y - ag.y) > 80:
+                continue
+            j = int(np.hypot(ln.xy[:, 0] - o.x, ln.xy[:, 1] - o.y).argmin())
+            if math.hypot(ln.xy[j, 0] - o.x, ln.xy[j, 1] - o.y) > 1.6 + o.lwh[1] / 2:
+                continue                                       # not in the target lane
+            gap = float(ln.cum[j]) - p0
+            free = abs(gap) - (ag.lwh[0] + o.lwh[0]) / 2
+            if gap >= 0 and free < 2.0 + 0.3 * ag.v:
+                return False
+            if gap < 0:
+                closing = max(0.0, o.v - ag.v)
+                if free < 2.0 + 0.5 * o.v or closing ** 2 / (2 * max(free - 2.0, 0.1)) > 3.0:
+                    return False
+        return True
+
     def _begin_lane_change(self, ag: Agent, direction: str, n: int, T: float, act_id: str):
         key = ag.path.keys[ag.path.lane_index(ag.p)]
         tgt = key
@@ -519,7 +567,7 @@ class TanitSim:
     def step(self):
         dt, t = self.dt, self.t
         for act in self.actions.values():
-            if act.id not in self.started and self._fires(act.start):
+            if act.id not in self.started and self._fires(act.start) and not self._defer(act):
                 self._start_action(act)
         for ag in self.agents.values():
             if ag.done:
