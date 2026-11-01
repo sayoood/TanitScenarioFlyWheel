@@ -1,0 +1,50 @@
+--- a/pipeline_cosmos3_nano_sim_auto.py
++++ b/pipeline_cosmos3_nano_sim_auto.py
+@@ -18,6 +18,7 @@
+ import hashlib
+ import json
+ import math
++import os
+ from collections import OrderedDict
+ from collections.abc import Iterable, Mapping, Sequence
+ from contextlib import contextmanager
+@@ -99,6 +100,10 @@
+     item_token_ranges,
+ )
+ 
++# tsf/thor patch: TSF_KV_VIEWS=N sizes the AR-Diffusion KV ring (default + worst case) for N RGB-only views instead of all
++# manifest cameras with LiDAR, so Sim-Auto fits next to the resident LLM. 0 = stock behaviour.
++_TSF_KV_VIEWS = int(os.environ.get("TSF_KV_VIEWS", "0"))
++
+ logger = init_logger(__name__)
+ 
+ _SYSTEM_PROMPTS = {
+@@ -280,6 +285,8 @@
+ 
+     def _default_geometry(self) -> tuple[int, bool, int, int, float]:
+         width, height = VIDEO_RES_SIZE_INFO[self.manifest.default_resolution]["16,9"]
++        if _TSF_KV_VIEWS:  # tsf/thor patch: size the paged KV ring for N views, RGB-only
++            return _TSF_KV_VIEWS, False, height, width, self.manifest.default_fps
+         return len(self.manifest.cameras), self.manifest.joint, height, width, self.manifest.default_fps
+ 
+     def ar_diffusion_kv_cache_spec(self) -> ARDiffusionKVCacheSpec:
+@@ -311,16 +318,16 @@
+     def ar_diffusion_worst_case_request_specs(self) -> Iterable[ARDiffusionRequestKVSpec]:
+         sizes = VIDEO_RES_SIZE_INFO[self.manifest.default_resolution]
+         width, height = max(sizes.values(), key=lambda size: size[0] * size[1])
+-        num_views = len(self.manifest.cameras)
++        num_views = _TSF_KV_VIEWS or len(self.manifest.cameras)
+         yield ARDiffusionRequestKVSpec(
+             kv_spec=self._kv_spec(
+                 num_views=num_views,
+-                joint=self.manifest.joint,
++                joint=False if _TSF_KV_VIEWS else self.manifest.joint,
+                 height=height,
+                 width=width,
+                 fps=self.manifest.default_fps,
+             ),
+-            geometry_key=(num_views, self.manifest.joint, height, width, self.manifest.default_fps),
++            geometry_key=(num_views, False if _TSF_KV_VIEWS else self.manifest.joint, height, width, self.manifest.default_fps),
+         )
+ 
+     def validate_ar_diffusion_effective_spec(self, spec: ARDiffusionKVCacheSpec) -> None:
