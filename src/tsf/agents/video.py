@@ -169,8 +169,8 @@ def lift_video(video: str, workdir: Path, llm: LLM | None = None, max_seconds: f
     path = resolve(video)
     stage("vipe", "running", path.name)
     t0 = time.perf_counter()
-    vr = vipe.run_vipe(path, wd / "vipe", max_seconds=max_seconds)
-    track = vipe.ego_track(vr["poses"], vr["t"])
+    vr = vipe.run_vipe(path, wd / "vipe", max_seconds=max_seconds, fps=15)
+    track = vipe.despike(vipe.ego_track(vr["poses"], vr["t"]), vr["t"])
     ego = ego_summary(track, np.asarray(vr["t"]))
     t_vipe = time.perf_counter() - t0
     stage("vipe", "ok", f"{vr['frames']} frames in {vr['runtime_s']:.0f} s; {ego['distance_m']} m, "

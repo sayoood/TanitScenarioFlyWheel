@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Reproducible ViPE install on thor3 (ssh alias tsf-thor). Run on thor from anywhere:
-#   bash setup.sh            # clone + build image tsf-vipe:latest (~15 min, mostly CUDA extension compile)
-#   bash setup.sh smoke      # additionally import torch/vipe/vipe_ext on the GPU to verify the build
+#   bash setup.sh            # clone + build image tsf-vipe:latest (mostly CUDA-extension compile + wheel downloads)
+#   bash setup.sh smoke      # additionally fetch the model weights and import vipe_ext on the GPU
 # Layout: $VIPE_ROOT/{src,cache,out}; weights (torch hub + HF) are cached in $VIPE_ROOT/cache.
 set -euo pipefail
 
@@ -23,12 +23,20 @@ if [ ! -d "$VIPE_ROOT/src/.git" ]; then
     fi
 fi
 git -C "$VIPE_ROOT/src" checkout -q "$VIPE_COMMIT"
+# CUDA 13 (CCCL 3) dropped thrust::tuple/get/make_tuple: use cuda::std equivalents in the KD-tree kernel.
+git -C "$VIPE_ROOT/src" checkout -q -- csrc
+git -C "$VIPE_ROOT/src" apply "$HERE/vipe-cuda13.patch"
 
-# Dockerfile and worker live next to this script; the ViPE checkout is the build context.
-cp "$HERE/Dockerfile" "$HERE/vipe_worker.py" "$VIPE_ROOT/src/"
-docker build -t "$IMAGE" -f "$VIPE_ROOT/src/Dockerfile" "$VIPE_ROOT/src"
+# Dockerfile, worker and wheels are separate build contexts: the ViPE checkout (the main context) stays
+# untouched, so editing the worker never invalidates the cached CUDA-extension layer.
+bash "$HERE/fetch_weights.sh" wheels
+printf '%s\n' .git assets docs build > "$VIPE_ROOT/src/.dockerignore"
+# nvcc/cicc peak ~6 GB per job on a box shared with vLLM/Cosmos: keep VIPE_JOBS small (default 2).
+docker build --build-arg MAX_JOBS="${VIPE_JOBS:-2}" -t "$IMAGE" -f "$HERE/Dockerfile" \
+    --build-context wheels="$VIPE_ROOT/wheels" --build-context tsf="$HERE" "$VIPE_ROOT/src"
 
 if [ "${1:-}" = smoke ]; then
+    bash "$HERE/fetch_weights.sh"
     docker run --rm --runtime nvidia --gpus all --ipc host \
         -v "$VIPE_ROOT/cache:/cache" -v "$VIPE_ROOT/out:/work" "$IMAGE" \
         python -c "import torch, vipe, vipe_ext; print('ok', torch.__version__, torch.cuda.get_device_name(0))"

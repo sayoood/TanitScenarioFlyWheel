@@ -1,0 +1,116 @@
+diff --git a/csrc/utils_ext/cuda_kdtree.cu b/csrc/utils_ext/cuda_kdtree.cu
+index cc58b56..d358872 100644
+--- a/csrc/utils_ext/cuda_kdtree.cu
++++ b/csrc/utils_ext/cuda_kdtree.cu
+@@ -43,6 +43,7 @@
+ #include <thrust/copy.h>
+ #include <thrust/scan.h>
+ #include <thrust/count.h>
++#include <cuda/std/tuple>
+ 
+ #include <limits>
+ 
+@@ -415,8 +416,8 @@ namespace tinyflann {
+ 
+             struct SecondElementIsEven {
+                 __host__ __device__
+-                bool operator()(const thrust::tuple<int, int> &i) {
+-                    return (thrust::get<1>(i) & 1) == 0;
++                bool operator()(const ::cuda::std::tuple<int, int> &i) {
++                    return (::cuda::std::get<1>(i) & 1) == 0;
+                 }
+             };
+ 
+@@ -457,12 +458,12 @@ namespace tinyflann {
+                 int *lrx_, *lry_, *lrz_;
+ 
+                 __device__
+-                void operator()(const thrust::tuple<int, int, int, int> &data) {
+-                    int index = thrust::get<0>(data);
++                void operator()(const ::cuda::std::tuple<int, int, int, int> &data) {
++                    int index = ::cuda::std::get<0>(data);
+                     int owner = ox_[index]; // before a split, all points at the same position in the index array have the same owner
+-                    int point_ind1 = thrust::get<1>(data);
+-                    int point_ind2 = thrust::get<2>(data);
+-                    int point_ind3 = thrust::get<3>(data);
++                    int point_ind1 = ::cuda::std::get<1>(data);
++                    int point_ind2 = ::cuda::std::get<2>(data);
++                    int point_ind3 = ::cuda::std::get<3>(data);
+                     int leftChild = child1_[owner];
+                     int split_dim;
+                     float dim_val1, dim_val2, dim_val3;
+@@ -506,7 +507,7 @@ namespace tinyflann {
+                     lrx_[index] = (dim_val1 > split.split_val);
+                     lry_[index] = (dim_val2 > split.split_val);
+                     lrz_[index] = (dim_val3 > split.split_val);
+-                    //                      return thrust::make_tuple( r1, r2, leftChild+(dim_val > split.split_val) );
++                    //                      return ::cuda::std::make_tuple( r1, r2, leftChild+(dim_val > split.split_val) );
+                 }
+             };
+ 
+@@ -560,14 +561,14 @@ namespace tinyflann {
+ 
+                 __device__
+                 void operator()(
+-                        thrust::tuple<int &, int &, SplitInfo &, float4 &, float4 &, int> node) // float4: aabbMin, aabbMax
++                        ::cuda::std::tuple<int &, int &, SplitInfo &, float4 &, float4 &, int> node) // float4: aabbMin, aabbMax
+                 {
+-                    int &parent = thrust::get<0>(node);
+-                    int &child1 = thrust::get<1>(node);
+-                    SplitInfo &s = thrust::get<2>(node);
+-                    const float4 &aabbMin = thrust::get<3>(node);
+-                    const float4 &aabbMax = thrust::get<4>(node);
+-                    int my_index = thrust::get<5>(node);
++                    int &parent = ::cuda::std::get<0>(node);
++                    int &child1 = ::cuda::std::get<1>(node);
++                    SplitInfo &s = ::cuda::std::get<2>(node);
++                    const float4 &aabbMin = ::cuda::std::get<3>(node);
++                    const float4 &aabbMax = ::cuda::std::get<4>(node);
++                    int my_index = ::cuda::std::get<5>(node);
+                     bool split_node = false;
+                     // first, each thread block counts the number of nodes that it needs to allocate...
+                     __shared__ int block_nodes_to_allocate;
+@@ -664,8 +665,8 @@ namespace tinyflann {
+ //! float4 input buffer into three arrays in the beginning of the tree build)
+             struct pointxyz_to_px_py_pz {
+                 __device__
+-                thrust::tuple<float, float, float> operator()(const float4 &val) {
+-                    return thrust::make_tuple(val.x, val.y, val.z);
++                ::cuda::std::tuple<float, float, float> operator()(const float4 &val) {
++                    return ::cuda::std::make_tuple(val.x, val.y, val.z);
+                 }
+             };
+         } // namespace kd_tree_builder_detail
+@@ -757,7 +758,7 @@ namespace tinyflann {
+             //              sleep(1);
+             //              Util::Timer stepTimer;
+             thrust::transform(points_->begin(), points_->end(), thrust::make_zip_iterator(
+-                                      thrust::make_tuple(points_x_->begin(), points_y_->begin(), points_z_->begin())),
++                                      ::cuda::std::make_tuple(points_x_->begin(), points_y_->begin(), points_z_->begin())),
+                               cuda::kd_tree_builder_detail::pointxyz_to_px_py_pz());
+ 
+             thrust::counting_iterator<int> it(0);
+@@ -802,9 +803,9 @@ namespace tinyflann {
+ 
+                 thrust::counting_iterator<int> cit(0);
+                 thrust::for_each(thrust::make_zip_iterator(
+-                                         thrust::make_tuple(parent_->begin(), child1_->begin(), splits_->begin(), aabb_min_->begin(),
++                                         ::cuda::std::make_tuple(parent_->begin(), child1_->begin(), splits_->begin(), aabb_min_->begin(),
+                                                             aabb_max_->begin(), cit)),
+-                                 thrust::make_zip_iterator(thrust::make_tuple(parent_->begin() + last_node_count,
++                                 thrust::make_zip_iterator(::cuda::std::make_tuple(parent_->begin() + last_node_count,
+                                                                               child1_->begin() + last_node_count,
+                                                                               splits_->begin() + last_node_count,
+                                                                               aabb_min_->begin() + last_node_count,
+@@ -847,9 +848,9 @@ namespace tinyflann {
+                 );
+                 thrust::counting_iterator<int> ci0(0);
+                 thrust::for_each(thrust::make_zip_iterator(
+-                                         thrust::make_tuple(ci0, index_x_->begin(), index_y_->begin(), index_z_->begin())),
++                                         ::cuda::std::make_tuple(ci0, index_x_->begin(), index_y_->begin(), index_z_->begin())),
+                                  thrust::make_zip_iterator(
+-                                         thrust::make_tuple(ci0 + points_->size(), index_x_->end(), index_y_->end(),
++                                         ::cuda::std::make_tuple(ci0 + points_->size(), index_x_->end(), index_y_->end(),
+                                                             index_z_->end())), sno);
+ 
+ #ifdef PRINT_DEBUG_TIMING
