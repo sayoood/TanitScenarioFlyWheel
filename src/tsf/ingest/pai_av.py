@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import os
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -217,13 +218,79 @@ def _sample(tr: Track, tq: np.ndarray) -> np.ndarray:
     return np.stack([np.interp(tq, tr.t, tr.sd[:, 0]), np.interp(tq, tr.t, tr.sd[:, 1])], 1)
 
 
+def _merge(a: Track, b: Track) -> Track:
+    t = np.concatenate([a.t, b.t[b.t > a.t[-1]], b.t[b.t < a.t[0]]])
+    xy = np.concatenate([a.xy, b.xy[b.t > a.t[-1]], b.xy[b.t < a.t[0]]])
+    yaw = np.concatenate([a.yaw, b.yaw[b.t > a.t[-1]], b.yaw[b.t < a.t[0]]])
+    o = np.argsort(t)
+    return Track(a.id, a.cls, t[o], xy[o], np.unwrap(yaw[o]), a.lwh if a.lwh[0] >= b.lwh[0] else b.lwh)
+
+
+def stitch(tracks: list[Track], gap_s: float = 1.5, tol_m: float = 3.0, dup_m: float = 2.0) -> list[Track]:
+    """Auto-labelled tracks fragment: ID switches (one car becomes a new track every few seconds) and duplicate
+    simultaneous tracks of one object. Back-extrapolating such fragments stacks one car onto the same spot.
+    Merge B into A if B continues A (starts <= gap_s after A ends, within tol_m of A's constant-velocity prediction,
+    similar heading) or duplicates it (mean distance over their time overlap < dup_m)."""
+    tr = sorted([t for t in tracks if len(t.t) >= 2], key=lambda x: x.t[0])
+    used, out = [False] * len(tr), []
+    for i in range(len(tr)):
+        if used[i]:
+            continue
+        a, grown = tr[i], True
+        while grown:                                     # keep extending a until nothing continues or duplicates it
+            grown = False
+            k = max(0, len(a.t) - 6)
+            va = (a.xy[-1] - a.xy[k]) / max(a.t[-1] - a.t[k], 1e-3)
+            for j in range(i + 1, len(tr)):
+                b = tr[j]
+                if used[j]:
+                    continue
+                if b.t[0] > a.t[-1] + gap_s:             # sorted by start: no later track can join
+                    break
+                lo, hi = max(a.t[0], b.t[0]), min(a.t[-1], b.t[-1])
+                if hi - lo >= 0.3:                       # overlapping in time: duplicate of the same object?
+                    tq = np.linspace(lo, hi, 8)
+                    pa = np.stack([np.interp(tq, a.t, a.xy[:, c]) for c in (0, 1)], 1)
+                    pb = np.stack([np.interp(tq, b.t, b.xy[:, c]) for c in (0, 1)], 1)
+                    ok = float(np.hypot(*(pa - pb).T).mean()) < dup_m
+                else:                                    # continuation after an ID switch?
+                    dt = b.t[0] - a.t[-1]
+                    dh = abs(math.remainder(float(b.yaw[0] - a.yaw[-1]), 2 * math.pi))
+                    miss = float(np.hypot(*(a.xy[-1] + va * dt - b.xy[0])))
+                    ok = dt >= 0 and dh < math.radians(30) and miss < tol_m + 0.2 * dt * float(np.hypot(*va))
+                if ok:
+                    a, used[j], grown = _merge(a, b), True, True
+                    break
+        out.append(a)
+    return out
+
+
 # ----------------------------------------------------------------------------- lift
+def _extent(clip: Clip, t0: float, duration: float) -> tuple[float, float]:
+    """Road extension (back, fwd) so that late appearances back-extrapolate to t0 without being clipped onto the road
+    end (fast oncoming highway traffic seen 10 s into the clip starts ~300 m further ahead)."""
+    back, fwd = 200.0, 450.0
+    for tr in clip.tracks:
+        late = min(tr.t[0], t0 + duration) - t0
+        if late <= 0.5 or len(tr.t) < 3:
+            continue
+        v = float(np.median(np.hypot(*np.gradient(tr.xy, tr.t, axis=0).T)))
+        dh = abs(math.remainder(float(np.median(tr.yaw)) - float(np.interp(tr.t[0], clip.t, clip.yaw)), 2 * math.pi))
+        if dh > 3 * math.pi / 4:
+            fwd = max(fwd, v * late + 450.0)
+        else:
+            back = max(back, v * late + 150.0)
+    return min(back, 1200.0), min(fwd, 1800.0)
+
+
 def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors: int = 12, title: str = "",
          description: str = "", polarity: str = "positive") -> dict:
     """Returns a TSIR dict (+ `_log` with the Frenet ground truth used for the fidelity check)."""
     T = clip.t[-1]
     duration = float(min(duration or T - t0, T - t0))
-    ref = reference(clip, back=200.0, fwd=450.0)   # room for late (back-extrapolated) appearances
+    clip = dataclasses.replace(clip, tracks=stitch(clip.tracks))
+    back, fwd = _extent(clip, t0, duration)
+    ref = reference(clip, back=back, fwd=fwd)          # room for late (back-extrapolated) appearances
     ego_sd = ref.frenet(clip.xy)
     for tr in clip.tracks:
         tr.sd = ref.frenet(tr.xy)
@@ -282,7 +349,8 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
                 continue
             k = int(np.clip(np.round((np.median(sd[:, 1]) - opp_d0) / W) + 1, 1, n_bwd))
             s_gt = L - s_fwd
-            s0 = s_gt[0] - abs(v[0]) * (ts[0] - t0)          # back-extrapolate late appearances to t0
+            # back-extrapolate late appearances to t0 (1 s median speed: first detections are noisy)
+            s0 = s_gt[0] - abs(float(np.median(v[:10]))) * (ts[0] - t0)
             init = {"road": 0, "direction": "backward", "lane": k, "s": round(float(np.clip(s0, 1, L - 1)), 2)}
             # lane centre in the ego frame; a median (opp_d0 beyond the first lane) stays compressed, a narrow
             # road does not, so queued/parked oncoming cars keep the real gap the ego squeezes through
@@ -292,19 +360,19 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
                 init["t_offset"] = round(float(np.clip(off.mean(), -2.5, 2.5)), 2)
             elif abs(np.median(off[:10])) > 0.4:
                 init["t_offset"] = round(float(np.clip(np.median(off[:10]), -2.5, 2.5)), 2)
-            speed = abs(float(np.median(v[:5])))
+            speed = abs(float(np.median(v[:10])))
             acts = speed_actions(aid, ts, np.abs(v), t0)
         else:
             lane = int(np.clip(ego_lane - int(np.round(sd[0, 1] / W)), 1, n_fwd))
             s_gt = s_fwd
-            s0 = s_gt[0] - v[0] * (ts[0] - t0)
+            s0 = s_gt[0] - float(np.median(v[:10])) * (ts[0] - t0)
             init = {"road": 0, "direction": "forward", "lane": lane, "s": round(float(s0), 2)}
             off = sd[:, 1] - (ego_lane - lane) * W                # offset from its lane centre
             if np.abs(v).max() < 0.8:                         # parked: keep its offset from the lane centre
                 init["t_offset"] = round(float(np.clip(off.mean(), -2.5, 2.5)), 2)
             elif abs(np.median(off[:10])) > 0.4:              # moving but riding off-centre (e.g. a wide truck)
                 init["t_offset"] = round(float(np.clip(np.median(off[:10]), -2.5, 2.5)), 2)
-            speed = max(0.0, float(np.median(v[:5])))
+            speed = max(0.0, float(np.median(v[:10])))
             acts = (speed_actions(aid, ts, np.maximum(v, 0), t0) + lane_actions(aid, ts, sd[:, 1], t0)
                     + (offset_actions(aid, ts, sd[:, 1], t0) if np.abs(v).max() >= 0.8 else []))
         cat = tr.cls if tr.cls in ("car", "truck", "bus", "van", "motorcycle", "bicycle", "pedestrian") else "car"
