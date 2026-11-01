@@ -217,22 +217,30 @@ class Lifter:
                 f"{json.dumps(analysis, separators=(',', ':'))}")
         return [{"role": "system", "content": sys}, {"role": "user", "content": user}]
 
-    def lift(self, query: str, workdir: str | Path, sid: str | None = None) -> LiftResult:
+    def lift(self, query: str, workdir: str | Path, sid: str | None = None, on_stage=None) -> LiftResult:
+        """`on_stage(name, status, detail)` is called at every stage transition (UI / event stream)."""
+        stage = on_stage or (lambda *a: None)
         t0 = time.perf_counter()
         wd = Path(workdir)
         wd.mkdir(parents=True, exist_ok=True)
         k = self.h.knobs()
         sid = sid or _slug(query)
+        stage("analyse", "running", "")
         analysis = self.analyse(query)
+        stage("analyse", "ok", "")
         msgs = self.propose(query, analysis, sid)
         attempts: list[Attempt] = []
         for i in range(k["max_repairs"] + 1):
             ta = time.perf_counter()
+            stage("propose" if i == 0 else "repair", "running", f"attempt {i}")
             raw = self.llm.chat(msgs, schema=self._tsir_schema, role="proposer" if i == 0 else "repairer",
                                 thinking=k["thinking"], temperature=k["temperature"])
             raw.setdefault("meta", {})["id"] = sid
+            stage("propose" if i == 0 else "repair", "ok", f"attempt {i}")
+            stage("verify", "running", f"attempt {i}")
             rep = ladder.run(raw, wd / f"attempt{i}")
             attempts.append(Attempt(raw, rep, time.perf_counter() - ta))
+            stage("verify", "ok" if rep.passed else "failed", rep.diagnostics()[:300])
             if rep.passed:
                 break
             msgs = msgs + [{"role": "assistant", "content": json.dumps(raw, separators=(",", ":"))},
@@ -241,7 +249,9 @@ class Lifter:
                             "timing, signal offsets, lane numbers, triggers or assertions) and output the complete "
                             "corrected TSIR."}]
         final = next((a for a in reversed(attempts) if a.report.passed), attempts[-1])
+        stage("document", "running", "")
         narrative = self.document(query, analysis, attempts, final)
+        stage("document", "ok", "")
         pkg = assemble_package(query, analysis, attempts, final, narrative)
         valid, errs = validate_package(pkg)
         (wd / "package.json").write_text(json.dumps(pkg, indent=2), encoding="utf-8")

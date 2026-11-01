@@ -33,3 +33,4 @@ report/build/
 *.toc
 *.synctex.gz
 desktop.ini
+third_party/

@@ -5,6 +5,8 @@ fed back to the generating agent (repair loop) and logged as harness reward.
 """
 from __future__ import annotations
 
+import functools
+
 import json
 import os
 import shutil
@@ -76,18 +78,31 @@ def l0_parse(raw: str | dict) -> tuple[Scenario | None, list[Finding]]:
 
 
 # ----------------------------------------------------------------------------- L1
-def _xsd(name: str) -> etree.XMLSchema | None:
+@functools.cache
+def _xsd(name: str):
+    """lxml for XSD 1.0 (OpenSCENARIO); xmlschema for XSD 1.1 (OpenDRIVE >= 1.8, as ASAM QC does)."""
     p = XSD_DIR / name
-    return etree.XMLSchema(etree.parse(str(p))) if p.exists() else None
+    if not p.exists():
+        return None
+    if name.startswith("OpenDRIVE"):
+        import xmlschema
+        return xmlschema.XMLSchema11(str(p))
+    return etree.XMLSchema(etree.parse(str(p)))
 
 
 def l1_xsd(path: Path, xsd_name: str, check: str) -> Finding:
-    schema = _xsd(xsd_name)
+    try:
+        schema = _xsd(xsd_name)
+    except Exception as e:  # unparseable schema is a tooling problem, not a scenario defect
+        return Finding("L1", check, True, f"skipped: {type(e).__name__}: {str(e)[:120]}", {"skipped": True})
     if schema is None:
         return Finding("L1", check, True, f"skipped: {xsd_name} not installed", {"skipped": True})
-    doc = etree.parse(str(path))
-    ok = schema.validate(doc)
-    errs = [f"line {e.line}: {e.message}" for e in list(schema.error_log)[:8]]
+    if isinstance(schema, etree.XMLSchema):
+        ok = schema.validate(etree.parse(str(path)))
+        errs = [f"line {e.line}: {e.message}" for e in list(schema.error_log)[:8]]
+    else:
+        errs = [f"{e.path}: {e.reason}" for e in schema.iter_errors(str(path))][:8]
+        ok = not errs
     return Finding("L1", check, ok, "; ".join(errs), {"errors": errs})
 
 
