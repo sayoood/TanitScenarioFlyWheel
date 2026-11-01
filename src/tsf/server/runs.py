@@ -23,7 +23,9 @@ EXAMPLES = ROOT / "examples"
 KIND = {".xodr": "xodr", ".xosc": "xosc", ".osc": "osc2", ".mp4": "video", ".png": "image", ".json": "json"}
 _LIFT = ["analyse", "propose", "verify", "repair", "document"]
 _DOWN = ["simulate", "augment", "closed_loop"]
-STAGES = {"uc1": _LIFT + _DOWN, "uc3": ["brief"] + _LIFT + ["twin"] + _DOWN}
+STAGES = {"uc1": _LIFT + _DOWN, "uc3": ["brief"] + _LIFT + ["twin"] + _DOWN,
+          "uc4": ["lift", "verify", "analyse", "document"] + _DOWN,
+          "uc5": ["lift", "verify", "twin", "analyse", "document"] + _DOWN}
 
 
 def now() -> str:
@@ -281,4 +283,69 @@ def uc3(ctx: Ctx):
     downstream(ctx, tsir, rep)
 
 
-PIPELINES = {"uc1": uc1, "uc3": uc3}
+def _lift_snippet(ctx: Ctx, polarity: str) -> dict:
+    from tsf.agents import snippet
+    ctx.stage("lift", "running")
+    lifted = snippet.lift_snippet(ctx.run["input"]["snippet"], ctx.dir, polarity=polarity)
+    fid = lifted["fidelity"]
+    ctx.stage("lift", "ok", f"{len(lifted['tsir']['actors'])} actors, {len(lifted['tsir']['actions'])} actions; ego ADE "
+              f"{(fid.get('ego') or {}).get('ade_s')} m, NPC ADE {fid.get('npc_mean_ade_s')} m")
+    rep = lifted["report"]
+    ctx.stage("verify", "ok" if rep.passed else "failed", rep.diagnostics()[:300])
+    ctx.run["lift"] = {"event": lifted["event"], "t0": lifted["t0"], "dropped": lifted["dropped"], "fidelity": fid}
+    ctx.run["kpis"].update(lift_s=round(lifted["seconds"], 2), lift_consistent=rep.passed,
+                           lift_ego_ade_s=(fid.get("ego") or {}).get("ade_s"), lift_npc_ade_s=fid.get("npc_mean_ade_s"))
+    ctx.save()
+    return lifted
+
+
+def uc4(ctx: Ctx):
+    """Sensor snippet with GT ego -> lifted, verified TSIR -> LLM analysis/documentation -> UC1 downstream."""
+    from tsf.agents import snippet
+    from tsf.agents.llm import LLM
+    lifted = _lift_snippet(ctx, "positive")
+    if not lifted["report"].passed:
+        raise RuntimeError("lifted snippet is not consistent: " + lifted["report"].diagnostics()[:300])
+    ctx.stage("analyse", "running")
+    llm = LLM()
+    res = snippet.document(lifted, llm, ctx.dir / "doc")
+    ctx.stage("analyse", "ok")
+    ctx.stage("document", "ok", "IMDAD package valid" if res.package_valid else "; ".join(res.package_errors[:2]))
+    tsir, rep = lifted["tsir"], lifted["report"]
+    ctx.run["attempts"] = [_attempt(0, rep, lifted["seconds"])]
+    ctx.run["package_valid"], ctx.run["package_errors"] = res.package_valid, res.package_errors
+    ctx.run["llm"] = {"calls": res.llm_stats.get("calls", 0), "tok_per_s": res.llm_stats.get("tok_per_s", 0.0)}
+    shutil.copy2(ctx.dir / "doc" / "package.json", ctx.dir / "package.json")
+    _publish_files(ctx.dir / "lift", ctx.dir)
+    ctx.run["kpis"].update(first_pass_valid=rep.passed, package_valid=res.package_valid,
+                           llm_tok_per_s=res.llm_stats.get("tok_per_s"))
+    downstream(ctx, tsir, rep)
+
+
+def uc5(ctx: Ctx):
+    """Negative snippet -> lifted NEGATIVE -> LLM ego-plan twin (ego edits only) -> verified POSITIVE -> downstream."""
+    from tsf.agents import snippet
+    from tsf.agents.llm import LLM
+    lifted = _lift_snippet(ctx, "negative")
+    neg = lifted["report"]
+    if not hasattr(neg, "_log"):
+        raise RuntimeError("negative snippet could not be simulated: " + neg.diagnostics()[:300])
+    (ctx.dir / "negative_tsir.json").write_text(json.dumps(lifted["tsir"], indent=1))
+    ctx.stage("twin", "running")
+    llm = LLM()
+    res = snippet.twin(lifted, llm, ctx.dir / "twin")
+    fin = res.final.report
+    ctx.stage("twin", "ok" if fin.passed else "failed", res.extra["plan"]["strategy"][:200])
+    ctx.stage("analyse", "ok")
+    ctx.stage("document", "ok", "IMDAD package valid" if res.package_valid else "; ".join(res.package_errors[:2]))
+    kpis = dict(ctx.run["kpis"])
+    tsir, rep = _adopt_lift(ctx, res, ctx.dir / "twin")      # resets kpis to the twin's lift KPIs
+    nm = res.extra["negative_metrics"]
+    ctx.run["kpis"] = {**kpis, **ctx.run["kpis"], "neg_peak_decel": nm.get("ego_max_decel"),
+                       "pos_peak_decel": fin.metrics.get("ego_max_decel"), "neg_peak_jerk": nm.get("ego_max_abs_jerk"),
+                       "pos_peak_jerk": fin.metrics.get("ego_max_abs_jerk")}
+    ctx.run["twin"] = res.extra
+    downstream(ctx, tsir, rep)
+
+
+PIPELINES = {"uc1": uc1, "uc3": uc3, "uc4": uc4, "uc5": uc5}
