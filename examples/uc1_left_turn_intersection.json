@@ -11,7 +11,7 @@
   "road": {
     "type": "junction",
     "signalized": true,
-    "signal_plan": {"green_s": 25, "yellow_s": 3, "all_red_s": 2, "protected_left": true, "initial_phase_offset_s": 0},
+    "signal_plan": {"green_s": 25, "yellow_s": 3, "all_red_s": 2, "protected_left": true, "initial_phase_offset_s": 80},
     "corner_radius": 12,
     "approaches": [
       {"heading_deg": 0,   "length": 180, "speed_limit_kph": 50, "inbound": {"driving_lanes": 2}, "outbound": {"driving_lanes": 2}},
