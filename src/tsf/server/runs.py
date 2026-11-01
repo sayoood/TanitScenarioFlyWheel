@@ -41,6 +41,8 @@ class Store:
             if d["status"] in ("queued", "running"):
                 d["status"] = "failed"
                 d.setdefault("error", "interrupted by server restart")
+                for st in d.get("stages", []):
+                    st["status"] = {"running": "failed", "pending": "skipped"}.get(st["status"], st["status"])
                 p.write_text(json.dumps(d, indent=1))
 
     # ------------------------------------------------------------------ persistence

@@ -14,11 +14,15 @@ Layers
 from __future__ import annotations
 
 import math
+import multiprocessing as mp
+import os
+import pickle
+import sys
+import zlib
 from functools import lru_cache
 from pathlib import Path
 
 import cv2
-import imageio.v3 as iio
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from shapely.geometry import MultiPolygon, Polygon, box
@@ -366,7 +370,7 @@ class Renderer:
         xs, ys = S[:, :, 0], S[:, :, 1]
         view = (self.W / self.ppm, self.H / self.ppm)
         region = (xs.min() - view[0], ys.min() - view[1], xs.max() + view[0], ys.max() + view[1])
-        self.art = MapArt(sim.m, self.ppm, seed=abs(hash(sim.sc.meta.id)) % 2**31, region=region)
+        self.art = MapArt(sim.m, self.ppm, seed=zlib.crc32(sim.sc.meta.id.encode()), region=region)
         self.colors = {}
         for a in sim.sc.actors:
             self.colors[a.id] = VEH_COLORS.get(a.color.lower(), "#9aa3ad")
@@ -698,15 +702,47 @@ class Renderer:
         return np.asarray(out)
 
 
+_WORKER: Renderer | None = None
+
+
+def _init_worker(blob: bytes):
+    global _WORKER
+    cv2.setNumThreads(1)
+    sim, log, size, title = pickle.loads(blob)
+    _WORKER = Renderer(sim, log, size, title=title)
+
+
+def _render_frame(i: int) -> np.ndarray:
+    return _WORKER.frame(i)
+
+
 def render_video(sim: TanitSim, log: SimLog, out: str | Path, fps: int = 20, title: str = "",
-                 size=(1280, 720), follow: bool = True) -> Path:
+                 size=(1280, 720), follow: bool = True, workers: int | None = None) -> Path:
+    """Frames are rendered by a process pool (each worker builds its own static map layer) and streamed
+    to the encoder in order; falls back to one process for short clips or unpicklable inputs."""
+    import imageio.v2 as iio2
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    r = Renderer(sim, log, size, title=title)
     dt = log.t[1] - log.t[0] if len(log.t) > 1 else 0.05
     stride = max(1, int(round(1.0 / (fps * dt))))
-    frames = [r.frame(i) for i in range(0, len(log.t), stride)]
-    iio.imwrite(out, np.stack(frames), fps=fps, codec="libx264", quality=8, macro_block_size=8)
+    idx = list(range(0, len(log.t), stride))
+    workers = workers if workers is not None else min(12, max(1, (os.cpu_count() or 2) - 2))
+    blob = None
+    if workers > 1 and len(idx) >= 6 * workers:
+        try:
+            blob = pickle.dumps((sim, log, size, title))
+        except (pickle.PicklingError, TypeError, AttributeError):
+            blob = None
+    with iio2.get_writer(out, fps=fps, codec="libx264", quality=8, macro_block_size=8) as w:
+        if blob is None:
+            r = Renderer(sim, log, size, title=title)
+            for i in idx:
+                w.append_data(r.frame(i))
+        else:
+            ctx = mp.get_context("spawn" if sys.platform == "win32" else "forkserver")
+            with ctx.Pool(workers, _init_worker, (blob,)) as pool:
+                for frame in pool.imap(_render_frame, idx, chunksize=max(1, len(idx) // (workers * 4))):
+                    w.append_data(frame)
     return out
 
 
