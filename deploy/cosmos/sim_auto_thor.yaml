@@ -18,5 +18,5 @@ stages:
     engine_backend: vllm_omni.experimental.ar_diffusion.engine.ARDiffusionEngine
     model_config:
       ar_diffusion_kv_config:
-        gpu_memory_fraction: 0.2
+        gpu_memory_fraction: 0.4      # of the memory free after the weights load: 5 views need ~11.3 GB of KV
         warmup_cudagraph: false

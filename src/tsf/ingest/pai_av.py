@@ -352,8 +352,15 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
     ego_k = np.round((ego_sd[i0:, 1] - ego_d0) / W)
     n_left = int(max([0] + [k for k in same if k > 0] + list(ego_k[ego_k > 0])))
     n_right = int(max([0] + [-k for k in same if k < 0] + list(-ego_k[ego_k < 0])))
-    n_left = min(n_left, 5)                          # at most 6 lanes per direction, ego lane always inside
-    n_right = min(n_right, 5 - n_left)
+    # at most 6 lanes per direction: trim the outermost lane holding fewer vehicles, never one the ego uses;
+    # vehicles outside the window are dropped below (clamping them into the edge lane made phantom leaders)
+    need_l, need_r = int(max([0] + list(ego_k[ego_k > 0]))), int(max([0] + list(-ego_k[ego_k < 0])))
+    while n_left + n_right > 5:
+        cl, cr = sum(k == n_left for k in same), sum(k == -n_right for k in same)
+        if n_right > need_r and (cr < cl or (cr == cl and n_right >= n_left) or n_left <= need_l):
+            n_right -= 1
+        else:
+            n_left -= 1
     n_fwd = n_left + n_right + 1
     n_bwd = int(min(6, max([0] + opp)))
     ego_lane = n_left + 1
@@ -396,7 +403,9 @@ def lift(clip: Clip, t0: float = 0.0, duration: float | None = None, max_actors:
             speed = abs(float(np.median(v[:10])))
             acts = speed_actions(aid, ts, np.abs(v), t0)
         else:
-            lane = int(np.clip(ego_lane - int(np.round(sd[0, 1] / W)), 1, n_fwd))
+            lane = ego_lane - int(np.round(sd[0, 1] / W))
+            if not 1 <= lane <= n_fwd:                        # outside the 6-lane window
+                continue
             s_gt = s_fwd
             s0 = s_gt[0] - float(np.median(v[:10])) * (ts[0] - t0)
             init = {"road": 0, "direction": "forward", "lane": lane, "s": round(float(s0), 2)}

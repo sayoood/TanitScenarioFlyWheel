@@ -147,6 +147,24 @@ def request_text(scene: dict, ego: dict) -> str:
             f"users: {actors}. Events: {'; '.join(scene['events']) or 'none'}. Duration {ego['duration_s']:.0f} s.")
 
 
+def pin_ego_speed(tsir: dict, t: np.ndarray, v: np.ndarray) -> dict:
+    """Replace the ego's speed actions with RDP segments of the measured ViPE profile. The model transcribes a
+    stop-and-go profile poorly (dToIIqqvSt0: one 'accelerate to 50 km/h' for a 16 km/h peak, 13 km/h MAE)."""
+    from tsf.ingest.pai_av import speed_actions
+    ego = next((a for a in tsir.get("actors", []) if a.get("role") == "ego"), None)
+    if ego is None:
+        return tsir
+    tsir["actions"] = [a for a in tsir.get("actions", [])
+                       if not (a.get("actor") == ego["id"] and a.get("type") == "speed_change")]
+    ego["initial_speed"] = round(float(v[0]), 2)
+    acts = speed_actions(ego["id"], t, v, 0.0, tol=0.5)
+    # a constant profile (parked camera) still needs one ego maneuver for the OpenSCENARIO act
+    tsir["actions"] += acts or [{"id": f"{ego['id']}_v0", "type": "speed_change", "actor": ego["id"],
+                                 "start": {"kind": "sim_time", "t": 0.0}, "target_speed": round(float(v[0]), 2),
+                                 "accel": 1.0}]
+    return tsir
+
+
 def speed_fidelity(rep, ego: dict) -> dict:
     """Simulated vs ViPE ego speed (MAE, km/h) over the common horizon."""
     if not hasattr(rep, "_log"):
@@ -182,7 +200,9 @@ def lift_video(video: str, workdir: Path, llm: LLM | None = None, max_seconds: f
     t_scene = time.perf_counter() - t1
     query = request_text(scene, ego)
     (wd / "uc2_request.json").write_text(json.dumps({"ego": ego, "scene": scene, "query": query}, indent=1))
-    res: LiftResult = Lifter(llm).lift(query, wd / "lift", sid=_slug("video " + path.stem, 40), on_stage=on_stage)
+    tv, vv = np.asarray(vr["t"]) - vr["t"][0], gaussian_filter1d(track[:, 3], 3)
+    res: LiftResult = Lifter(llm).lift(query, wd / "lift", sid=_slug("video " + path.stem, 40), on_stage=on_stage,
+                                       pin=lambda d: pin_ego_speed(d, tv, vv))
     fid = speed_fidelity(res.final.report, ego)
     return {"result": res, "ego": ego, "scene": scene, "query": query, "fidelity": fid,
             "timing": {"vipe_s": round(t_vipe, 1), "scene_s": round(t_scene, 1), "vipe_runtime_s": vr["runtime_s"]}}

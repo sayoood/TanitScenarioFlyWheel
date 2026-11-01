@@ -240,12 +240,14 @@ class Lifter:
                 {"role": "user", "content": f"Use meta.id = \"{sid}\".\nRequest:\n{query}"}]
 
     def lift(self, query: str, workdir: str | Path, sid: str | None = None, on_stage=None,
-             mode: str | None = None) -> LiftResult:
+             mode: str | None = None, pin=None) -> LiftResult:
         """`on_stage(name, status, detail)` is called at every stage transition (UI / event stream).
 
         mode "schema_repair" (default): ablation round 2 (12 queries x 2 reps) measured 0.79 intent-correct for
         schema-prompted one-shot + verifier repair against 0.67 for the agentic analyse -> propose path, at a third
-        of the latency and half the tokens; the analysis is still produced (concurrently) for the package."""
+        of the latency and half the tokens; the analysis is still produced (concurrently) for the package.
+        ``pin(tsir) -> tsir`` imposes measured values (e.g. a logged ego speed profile) on every proposal and
+        repair before verification, so the model cannot drift from them."""
         stage = on_stage or (lambda *a: None)
         t0 = time.perf_counter()
         wd = Path(workdir)
@@ -256,13 +258,15 @@ class Lifter:
         if (mode or k["lift_mode"]) == "schema_repair":
             with ThreadPoolExecutor(1) as ex:
                 fut = ex.submit(self.analyse, query)
-                attempts = self.iterate(self.schema_prompt(query, sid), sid, wd, k["max_repairs"], stage=stage)
+                attempts = self.iterate(self.schema_prompt(query, sid), sid, wd, k["max_repairs"], stage=stage,
+                                        pin=pin)
                 analysis = fut.result()
             stage("analyse", "ok", "")
         else:
             analysis = self.analyse(query)
             stage("analyse", "ok", "")
-            attempts = self.iterate(self.propose(query, analysis, sid), sid, wd, k["max_repairs"], stage=stage)
+            attempts = self.iterate(self.propose(query, analysis, sid), sid, wd, k["max_repairs"], stage=stage,
+                                    pin=pin)
         final = next((a for a in reversed(attempts) if a.report.passed), attempts[-1])
         stage("document", "running", "")
         narrative = self.document(query, analysis, attempts, final)
@@ -276,7 +280,7 @@ class Lifter:
         return res
 
     def iterate(self, msgs: list[dict], sid: str, wd: Path, max_repairs: int, stage=None, qc: bool = True,
-                role: str = "proposer") -> list[Attempt]:
+                role: str = "proposer", pin=None) -> list[Attempt]:
         """Propose -> verify -> verifier-guided minimal-edit repair, until the ladder passes or repairs run out."""
         stage = stage or (lambda *a: None)
         k = self.h.knobs()
@@ -287,6 +291,8 @@ class Lifter:
             raw = self.llm.chat(msgs, schema=self._tsir_schema, role=role if i == 0 else "repairer",
                                 thinking=k["thinking"], temperature=k["temperature"])
             raw.setdefault("meta", {})["id"] = sid
+            if pin:
+                raw = pin(raw)
             stage("propose" if i == 0 else "repair", "ok", f"attempt {i}")
             stage("verify", "running", f"attempt {i}")
             (wd / f"attempt{i}").mkdir(parents=True, exist_ok=True)
