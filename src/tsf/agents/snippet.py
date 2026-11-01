@@ -134,7 +134,33 @@ def _splice(neg: dict, plan: EgoPlan, assertions: list[dict]) -> dict:
     return pos
 
 
-def twin(lifted: dict, llm: LLM, workdir: Path, max_repairs: int = 2) -> LiftResult:
+def _twin_feedback(rep) -> str:
+    """Time-resolved facts for the repairer: ego speed per second and, at the braking peak, the vehicle ahead
+    (gap, closing speed). Quantitative hints are what makes verifier-guided repair work (ablation, round 1)."""
+    if not hasattr(rep, "_log"):
+        return ""
+    log = rep._log
+    e = log.roles.index("ego")
+    S, t = log.states, log.t
+    secs = np.arange(0.0, float(t[-1]) + 1e-6, 1.0)
+    v = np.interp(secs, t, S[:, e, 3])
+    k = int(np.argmin(S[:, e, 4]))
+    ex, ey, eyaw = S[k, e, :3]
+    best = None
+    for j, aid in enumerate(log.ids):
+        if j == e or log.lanes[k][j] != log.lanes[k][e]:
+            continue
+        dx, dy = S[k, j, 0] - ex, S[k, j, 1] - ey
+        lon = dx * np.cos(eyaw) + dy * np.sin(eyaw)
+        if lon > 0 and (best is None or lon < best[1]):
+            best = (aid, lon, S[k, j, 3])
+    lead = (f"at the braking peak (t={t[k]:.1f} s, ego {S[k, e, 3]:.1f} m/s) the vehicle ahead in the ego lane is "
+            f"{best[0]}: {best[1] - (log.lwh[e, 0] + log.lwh[log.ids.index(best[0]), 0]) / 2:.1f} m bumper gap, "
+            f"{best[2]:.1f} m/s. " if best else f"at the braking peak (t={t[k]:.1f} s) no vehicle is ahead in the ego lane. ")
+    return f"Twin ego speed per second (m/s): {np.round(v, 1).tolist()}; {lead}\n"
+
+
+def twin(lifted: dict, llm: LLM, workdir: Path, max_repairs: int = 3) -> LiftResult:
     neg, nrep = lifted["tsir"], lifted["report"]
     nm = nrep.metrics
     target_decel = round(max(1.5, min(3.0, 0.75 * nm.get("ego_max_decel", 4.0))), 2)
@@ -164,6 +190,7 @@ def twin(lifted: dict, llm: LLM, workdir: Path, max_repairs: int = 2) -> LiftRes
         msgs = msgs + [{"role": "assistant", "content": plan.model_dump_json()},
                        {"role": "user", "content": "The verifier rejected the twin:\n" + rep.diagnostics() +
                         f"\nTwin metrics: {json.dumps({k: rep.metrics.get(k) for k in ctx['negative_metrics']})}\n"
+                        + _twin_feedback(rep) +
                         "Revise the ego plan (start the speed reduction earlier or lower, add clearance)."}]
     final = next((a for a in reversed(attempts) if a.report.passed), attempts[-1])
     lif = Lifter(llm)
