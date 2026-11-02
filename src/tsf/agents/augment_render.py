@@ -104,10 +104,24 @@ def event_time(log) -> float:
     return best_t
 
 
-def window_t0(log, duration: float, frames: int = FRAMES, fps: float = 30.0) -> float:
-    """Start of the render window: 1.5 s before the closest approach, clipped into the scenario."""
+def static_time(log, ids) -> float | None:
+    """Time of the ego's closest approach to the nearest of the given static objects (None: none of them in the log)."""
+    ids = set(ids or ())
+    bodies = [b for b in getattr(log, "static", None) or [] if b.id in ids]
+    if not bodies:
+        return None
+    e = log.roles.index("ego")
+    d = np.min([np.hypot(log.states[:, e, 0] - b.x, log.states[:, e, 1] - b.y) for b in bodies], axis=0)
+    return float(log.t[int(np.argmin(d))])
+
+
+def window_t0(log, duration: float, frames: int = FRAMES, fps: float = 30.0, focus=None) -> float:
+    """Start of the render window, clipped into the scenario: 1.5 s before the closest approach between actors, or,
+    with ``focus`` (static object ids a variant adds), ending just after the ego reaches them, so they are seen ahead."""
     win = frames / fps
-    return round(float(np.clip(event_time(log) - 1.5, 0.0, max(0.0, duration - win - 0.1))), 2)
+    ts = static_time(log, focus) if focus else None
+    t0 = event_time(log) - 1.5 if ts is None else ts - win + 0.3
+    return round(float(np.clip(t0, 0.0, max(0.0, duration - win - 0.1))), 2)
 
 
 # ----------------------------------------------------------------------------- render
@@ -258,12 +272,26 @@ def judge_lidar(result: dict | None, sensors_json: Path | None = None) -> dict:
             "weather_physics_applied": weather.get("physics_applied"), "checks_file": lid.get("checks")}
 
 
-def changed_objects(doc: dict, parent: dict) -> list[str]:
-    """Static objects added by the variant, as short names for the VLM question."""
+def changed_objects(doc: dict, parent: dict, log=None, t0: float | None = None, frames: int = FRAMES,
+                    fps: float = 30.0) -> list[str]:
+    """Static objects added by the variant, as short names for the VLM question. With the variant's TanitSim log and
+    the render window, only those the 120 deg front camera can see in it (ahead within +-60 deg, largest dimension
+    >= 0.025 rad, i.e. a cone up to ~30 m): a closure beyond the clip is not a rendering fault."""
     old = {o["id"] for o in parent.get("static_objects") or []}
+    seen = None
+    if log is not None and t0 is not None and getattr(log, "static", None):
+        e = log.roles.index("ego")
+        S = log.states[(log.t >= t0) & (log.t <= t0 + frames / fps), e]
+        seen = set()
+        for b in log.static:
+            dx, dy = b.x - S[:, 0], b.y - S[:, 1]
+            dist = np.hypot(dx, dy)
+            ang = np.abs(np.remainder(np.arctan2(dy, dx) - S[:, 2] + np.pi, 2 * np.pi) - np.pi)
+            if np.any((ang <= np.radians(60)) & (max(b.lwh) / np.maximum(dist, 1e-3) >= 0.025) & (dist <= 60)):
+                seen.add(b.id)
     out = []
     for o in doc.get("static_objects") or []:
-        if o["id"] in old:
+        if o["id"] in old or (seen is not None and o["id"] not in seen):
             continue
         name = _object_name(o)
         if name not in out:

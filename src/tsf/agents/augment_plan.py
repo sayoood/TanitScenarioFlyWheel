@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import math
 import random
 import re
 
@@ -222,7 +223,30 @@ def _s(site: dict, ahead: float) -> float:
     return int(round(min(max(site["s0"] + site["sgn"] * ahead, 6.0), site["length"] - 6.0)))
 
 
-def _roadworks_text(d: dict) -> str:
+def ego_exit_reach(d: dict, rep) -> float | None:
+    """How far into its exit arm (s, m from the junction) the parent's ego drives before the scenario ends, from the
+    verified parent's TanitSim run; 0 if it never leaves the junction, None without an exit arm or a sim."""
+    ex = _site(d)["exit"]
+    sim, log = getattr(rep, "_sim", None), getattr(rep, "_log", None)
+    if not ex or sim is None or log is None:
+        return None
+    from tsf.ir.scenario import LanePosition
+    from tsf.sim.engine import tsir_lane_key
+    e = log.roles.index("ego")
+    x, y = (float(v) for v in log.states[-1, e, :2])
+    best = (1e9, 0.0)
+    for s in range(0, int(ex["length"]) + 1):
+        try:
+            key, prog = tsir_lane_key(sim.sc, sim.m, LanePosition(road=ex["arm"], direction="outbound",
+                                                                  lane=ex["ego_lane"], s=float(s)))
+        except ValueError:
+            continue
+        px, py, _ = sim.m.lanes[key].pose(prog, 0.0)
+        best = min(best, (math.hypot(px - x, py - y), float(s)))
+    return best[1] if best[0] < 4.0 else 0.0
+
+
+def _roadworks_text(d: dict, reach: float | None = None) -> str:
     st = _site(d)
     where = (f"arm {st['arm']} {st['direction']}" if st["junction"] else f"{st['direction']} lanes") + \
         f" (ego: lane {st['ego_lane']} of {st['n']}, s={st['s0']:.0f}" + \
@@ -238,19 +262,27 @@ def _roadworks_text(d: dict) -> str:
     ex = st["exit"]
     if ex and ex["free"]:
         k = ex["free"][0]
-        s1, s2 = 30, 70
+        # the taper starts where the ego gets to: a fixed s=50..90 lay beyond the end of a 22 s left turn (the ego
+        # reached s~10), so the clip showed only the signs and the cones as dots on the horizon
+        if reach is None:
+            (c1, c2), sg, seen = (50, 90), 26, ""
+        else:
+            c1 = int(min(max(20, round(reach) - 5), ex["length"] - 41))
+            c2, sg = c1 + 30, 8
+            seen = f"; the ego gets to s={reach:.0f} before the scenario ends, so the closure must begin there to be seen"
         return (f"Road works on the ego's exit arm {ex['arm']} (outbound, lane {k} is free; the ego leaves in lane {ex['ego_lane']}; "
-                f"there s is the distance from the junction and grows while driving): a taper of 6-7 'cone' objects in lane {k} "
-                f"(road {ex['arm']}, direction outbound, spacing 5 m, t_offset -1.4 .. +1.4, s={s1 + 20}..{s2 + 20}), a 'traffic_sign' "
-                f"road_works at s={s1 - 6} and a 'traffic_sign' speed_limit with sign_value 30 at s={s1 - 12} (t_offset -2.6 in the "
-                f"outermost outbound lane), a 'barrier' at the end. The ego's own approach stays free; change nothing else.")
+                f"there s is the distance from the junction and grows while driving{seen}): a taper of 6-7 'cone' objects in "
+                f"lane {k} (road {ex['arm']}, direction outbound, spacing 5 m, t_offset -1.4 .. +1.4, s={c1}..{c2}), a "
+                f"'traffic_sign' road_works at s={c1 - sg} and a 'traffic_sign' speed_limit with sign_value 30 at s={c1 - sg - 6} "
+                f"(t_offset -2.6 in the outermost outbound lane), a 'barrier' at the end. The ego's own approach stays free; "
+                "change nothing else.")
     return (f"Road works at the roadside of {where}: every lane is used by the ego or another agent, so do not close one. "
             f"Mark the zone beside the road instead: a 'traffic_sign' road_works at s={_s(st, 45)} and a 'traffic_sign' "
             f"speed_limit (sign_value 30) at s={_s(st, 38)} ({right}), a group of 4-5 'cone' objects on the shoulder (outermost "
             f"lane {st['n']}, t_offset -2.4, spacing 3 m, from s={_s(st, 60)}), a 'parked_truck' (t_offset -3.4) at s={_s(st, 85)}.")
 
 
-def environment_levers(d: dict, static_objects: bool) -> list[tuple[str, str]]:
+def environment_levers(d: dict, static_objects: bool, reach: float | None = None) -> list[tuple[str, str]]:
     """Scenario-specific candidate environment changes (id, text) for the road, signs, static objects and setting."""
     road, ego, L = d["road"], _ego(d), []
     if road["type"] == "junction":
@@ -292,7 +324,7 @@ def environment_levers(d: dict, static_objects: bool) -> list[tuple[str, str]]:
         on = (f"arm {st['arm']} {st['direction']}" if st["junction"] else f"the {st['direction']} lanes") + \
             f" (ego: lane {st['ego_lane']} of {n}, s={st['s0']:.0f}; s " + \
             ("shrinks toward the stop line" if st["sgn"] < 0 else "grows while driving") + ")"
-        L.append(("road_works", _roadworks_text(d)))
+        L.append(("road_works", _roadworks_text(d, reach)))
         L.append(("parked_cars", f"Parked vehicles beside the road on {on}: two 'parked_car' static objects in the outermost "
                   f"lane {n} with t_offset about -3.2 (they stand next to the lane, not in it) at s={_s(st, 55)} and "
                   f"s={_s(st, 68)}. Keep the ego's lane free."))

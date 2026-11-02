@@ -624,7 +624,11 @@ class ScenarioAugmenter:
             res["event_t0"] = None
             try:
                 from tsf.agents import augment_render as R
-                res["event_t0"] = R.window_t0(frep._log, doc["duration"]) if hasattr(frep, "_log") else None
+                old = {o["id"] for o in pdoc.get("static_objects") or []}
+                new = [o["id"] for o in doc.get("static_objects") or [] if o["id"] not in old]
+                res["event_t0"] = R.window_t0(frep._log, doc["duration"], focus=new) if hasattr(frep, "_log") else None
+                if new and res["event_t0"] is not None:      # what the camera judge may ask for: objects in view
+                    res["judge_objects"] = R.changed_objects(doc, pdoc, frep._log, res["event_t0"])
             except Exception:   # noqa: BLE001
                 pass
         except Exception as e:   # noqa: BLE001 - one variant failing must not kill the others
@@ -728,7 +732,7 @@ class ScenarioAugmenter:
                 doc = r.pop("final_doc", None) or json.loads(Path(r["paths"]["tsir"]).read_text())
                 same_geom = ({k: v for k, v in doc.items() if k not in ("environment", "meta")}
                              == {k: v for k, v in pdoc.items() if k not in ("environment", "meta")})
-                objs = R.changed_objects(doc, pdoc)
+                objs = r["judge_objects"] if "judge_objects" in r else R.changed_objects(doc, pdoc)
                 kw = dict(cameras=cameras, frames=frames, lidar=lidar, wait_s=wait_s, state=state,
                           t0=t0p if same_geom else r.get("event_t0"),
                           scenario=pdoc if same_geom else None, geometry_dir=pgeo if same_geom else None,
@@ -921,7 +925,7 @@ def _get(doc, ptr: str):
 
 # ----------------------------------------------------------------------------- the agent API
 def _plan(parent: dict, mode: str, requests: dict | None, seed: int, separate: bool, pid: str,
-          static_objects: bool) -> list[Spec]:
+          static_objects: bool, reach: float | None = None) -> list[Spec]:
     specs: list[Spec] = []
     if mode == "auto":
         for i, d in enumerate(P.DIMS):
@@ -930,7 +934,8 @@ def _plan(parent: dict, mode: str, requests: dict | None, seed: int, separate: b
             if d == "weather":
                 sp.target = PL.draw_weather(parent["environment"], seed)
             else:
-                ls = PL.behavior_levers(parent) if d == "behavior" else PL.environment_levers(parent, static_objects)
+                ls = (PL.behavior_levers(parent) if d == "behavior" else
+                      PL.environment_levers(parent, static_objects, reach))
                 rng.shuffle(ls)
                 sp.levers[d] = ls[:6]
             specs.append(sp)
@@ -995,7 +1000,7 @@ def augment(parent, out_dir, *, mode: str = "auto", requests: dict | None = None
     # --- plan
     t_plan = time.perf_counter()
     has_static = "static_objects" in Scenario.model_fields
-    specs = _plan(pdoc, mode, requests, seed, separate, pid, has_static)
+    specs = _plan(pdoc, mode, requests, seed, separate, pid, has_static, PL.ego_exit_reach(pdoc, prep))
     plan_s = time.perf_counter() - t_plan
     for sp in specs:
         emit_for(sp)("plan", "ok", "+".join(sp.dims))
