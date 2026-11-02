@@ -3,7 +3,7 @@
 \usepackage[T1]{fontenc}
 \usepackage{lmodern,microtype}
 \usepackage{amsmath,amssymb}
-\usepackage{graphicx,booktabs,tabularx,multirow,array}
+\usepackage{graphicx,booktabs,tabularx,multirow,array,adjustbox}
 \usepackage{xcolor}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,fit,backgrounds,calc,shapes.geometric}
@@ -36,12 +36,15 @@
 \providecommand{\ResultsAblation}{\todo{ablation pending}}
 \providecommand{\ResultsRefe}{\todo{REFe results pending}}
 \providecommand{\ResultsTone}{\todo{T1 closed loop pending}}
+\providecommand{\ResultsAugment}{\todo{augmentation results pending}}
+\providecommand{\ResultsSensors}{\todo{sensor results pending}}
+\providecommand{\ResultsVipePAI}{\todo{ViPE validation pending}}
 
 \title{\vspace{-1.2em}\textbf{\tsf}\\[0.3em]
 \large An agentic, verifier-driven pipeline from scenario sources to multi-camera world-model data\\
 and closed-loop evaluation on a single Jetson AGX Thor}
 \author{TanitAD --- technical report}
-\date{1 November 2026}
+\date{2 November 2026}
 
 \begin{document}
 \maketitle
@@ -373,6 +376,49 @@ collision boundary (red crosses, cutter speed $\approx$34--35\,m/s); circles mar
 (coverage 70\,\% of the $8\times8$ grid).}\label{fig:aug}
 \end{figure}
 
+\paragraph{Agentic augmentation along three dimensions.} The augmentation agent derives variants of a verified
+scenario along three dimensions: D1 weather and time of day, D2 ego and agent behaviour, and D3 environment
+(road, lanes, signs, static objects). Each variant comes with its scenario description and its generated sensor
+data.
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item \emph{Automatic mode.} A planner draws one change per dimension. For D1 it draws a seeded random target
+  environment with day or night chosen at random. For D2 and D3 it writes candidate levers from the parent's
+  own geometry, for example road works in a lane no agent uses, placed where the ego actually drives in the
+  verified parent. Qwen picks one lever and writes it as JSON-Patch operations on the TSIR.
+\item \emph{Manual mode.} The user states the change in words. For D3 the editor also receives the planner's
+  placement facts: lane numbering, the lanes in use, shoulder offsets, and the direction of $s$.
+\end{itemize}
+Every variant passes the verifier ladder and an isolation check: only whitelisted paths of the requested
+dimensions may change, and the motion of the other agents must stay that of the parent. A description is
+written and checked to name every changed attribute, and the variant is packaged as Scenario\_Structure plus an
+IMDAD~v2 record. Cosmos3-Nano-Sim-Auto then renders three cameras plus LiDAR with the parent's seed, and a VLM
+judge compares the front camera with the intended weather, time band and added objects.
+
+The manual road-works request (\cref{tab:augment}) shows why the placement facts matter. ``Road works at the
+right roadside, keep every lane open'' failed twice without them. The cones and a crosswise barrier were placed
+at $t=-1.4$\,m, inside the ego's lane, and the ego braked at 4.5\,m/s$^2$. The repairs then moved other agents
+out of the way, which the isolation check rejects. The braking diagnostic now names the standing object the ego
+brakes for. With the facts, the same request verified on the first pass and needed no repair.
+
+The rendered variants (\cref{fig:augvar}) show the requested change. The camera judge confirms fog and dusk,
+the faster truck, and the cones and barrier, but not the two signs: Cosmos drew a generic sign in their place.
+Two limits of the generator show up:
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item \emph{Background.} The background is not held fixed across variants even with the parent's seed (an open
+  suburban road in one, city blocks in another). Only the controlled layout carries over.
+\item \emph{Object count.} Cosmos fills the five placed cones out into a dense row, so object counts are not
+  preserved.
+\end{itemize}
+
+\begin{figure}[h]\centering
+\IfFileExists{figs/aug_variants.jpg}{\includegraphics[width=\linewidth]{figs/aug_variants.jpg}}{}
+\caption{Front camera (Cosmos3-Nano-Sim-Auto) late in the render window: the UC1 parent, the automatic weather
+and behaviour variants, and the manual road-works variant (cones and barrier on the right shoulder, every lane
+open). Synthetic scenario.}\label{fig:augvar}
+\end{figure}
+
+\ResultsAugment
+
 %=====================================================================================================
 \section{UC3: counterfactual positive twins from incidents}
 For each NEGATIVE IMDAD~v2 incident the incident analyst writes a brief (failure mode, root cause,
@@ -421,6 +467,24 @@ front-wide, cross-right and cross-left at 480p, frame 76/97. Bottom: double cut-
 
 \ResultsCosmos
 
+\paragraph{Camera + LiDAR.} Sim-Auto generates the three cameras and a 128-beam LiDAR (10\,Hz) jointly. LiDAR
+memory forces the 97 frames into two chained windows of 49 frames: a single 97-frame request was OOM-killed next
+to the LLM.
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item \emph{Checks.} Each sweep is compared with the control: the HD map plus 3D boxes, ray-cast with the same
+  beam model. The checks cover point count, valid fraction, median range difference, agreement within 1\,m, and
+  recall of boxes closer than 10\,m.
+\item \emph{Weather.} In heavy rain the model drops about 25\,\% of the returns relative to the clear run,
+  against a 1\,\% seed-noise floor. It does not drop more returns at longer range, so a deterministic
+  range-dependent rain and fog attenuation is applied on top and the raw output is kept beside it.
+\end{itemize}
+\Cref{tab:sensors} gives one run per use case. UC1--UC4 agree with the control to a median of 0.2--0.4\,m.
+UC5 does not: 4.2--4.8\,m for both the negative and the twin, with only 19--20\,\% of points within 1\,m. Its
+lifted road (low-passed ego path, compressed median) evidently gives the model a scene it does not reconstruct
+consistently. This remains open.
+
+\ResultsSensors
+
 %=====================================================================================================
 \section{Closed loop}
 The same TanitSim world runs with a policy-driven ego. Tier T0 gives the policy privileged state (test
@@ -454,6 +518,25 @@ generated frames.
 
 \ResultsRefe
 
+On the UC1 left turn, REFe drove 15\,s of world time on generated frames: 28 chunks, 29 plans and 34.5\,min wall
+time (\cref{tab:tone,fig:tone}). The first 0.55\,s run on the constant-velocity fallback because no frames exist yet.
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item \emph{Score.} No collision, no off-road and no red-light violation; minimum TTC 2.8\,s and peak deceleration
+  1.9\,m/s$^2$, giving EPDMS 0.876.
+\item \emph{Limits.} EP is 0.70: REFe changes lanes left, slows to a mean of 7.6\,m/s and does not complete the
+  turn within the 15\,s horizon.
+\item \emph{Cost.} Cosmos takes 59\,s per chunk on average, so T1 runs about 140$\times$ slower than real time. It
+  is an offline evaluation tier, not a training loop.
+\end{itemize}
+An earlier run, superseded after a bug fix, is not shown.
+
+\begin{figure}[h]\centering
+\IfFileExists{figs/t1_mosaic.jpg}{\includegraphics[width=\linewidth]{figs/t1_mosaic.jpg}}{}
+\caption{T1 neural closed loop on the UC1 left turn. Rows 1--3: the cross-left, front and cross-right cameras
+that Cosmos3-Nano-Sim-Auto generated from the closed-loop world at $t=2$, 8 and 14\,s, which REFe planned on.
+Bottom: the TanitSim BEV at the same times (ego speed 41, 17 and 26\,km/h). Synthetic scenario.}\label{fig:tone}
+\end{figure}
+
 \ResultsTone
 
 \ResultsKPI
@@ -482,6 +565,40 @@ Four findings made ViPE usable on the Thor and on real dash-cam footage:
   verification, and the model writes everything else. Offline, pinning reduces the speed error on the three
   clips from 13.4, 11.8 and 0.5\,km/h to 0.8, 2.2 and 0.2\,km/h, and all three scenarios stay valid.
 \end{itemize}
+
+\paragraph{Speed from Cosmos, heading from ViPE.} ViPE's rotation is good, but its metric translation fails at
+speed.
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item \emph{ViPE alone.} On PhysicalAI-AV windows at 55--86\,km/h the speed error is 21--47\,km/h, and on the
+  100\,km/h dash-cam clip ViPE measured 0.8\,m in 20\,s. Its yaw-rate error is 0.63\,deg/s.
+\item \emph{Cosmos alone.} The Cosmos3-Edge inverse-dynamics model (6\,s windows at 10\,fps) keeps the speed
+  (median 4.1\,km/h) but turns worse (1.4\,deg/s).
+\item \emph{Fused.} UC2 now keeps the ViPE yaw and puts the Cosmos speed along it. On 12 ground-truth windows the
+  speed error is median 3.9 / p90 8.5\,km/h, against 5.7 / 40.8\,km/h for ViPE alone. On the three clips the
+  fused mean speeds (55, 0 then 35, and 93\,km/h) match what the videos show.
+\end{itemize}
+The signal phase is now pinned like the speed profile. The model had guessed a phase that turned red just as
+the measured ego pulled away; the ego then waited 30\,s and the repairer stretched the scenario to 47\,s. Green
+for the ego's movement now starts 0.5\,s before the measured departure, which cuts that clip's speed error from
+8.5 to 1.2\,km/h, and the scenario now verifies on the first pass.
+
+The road length is pinned the same way. One lift sized the motorway at 3$\times$150\,m for an ego that covers
+515\,m. A faster car ahead reached the end of the road, where TanitSim holds it, and the ego ran into it. The
+repairs read this as an NPC gap problem and failed three times. Linear roads are now extended until the measured
+ego distance, and every forward road user's travel, fits.
+
+A third failure mode needed a better diagnostic rather than a pin: a minivan cut into the ego's lane and held the
+speed-pinned ego below the measured speed. Speed and braking failures now name the road user or standing object
+the ego slows for, and follow a stopped car to what stopped it.
+
+\Cref{tab:vipepai} validates ViPE's other outputs against PhysicalAI-AV ground truth. The estimated focal length
+is 21--26\,\% too long. Taking it from the calibration cuts the heading error from 1.8 to 0.23\,deg, the aligned
+trajectory error from 1.95 to 0.45\,m and the near-road depth error (4--10\,m) from 0.26 to 0.10 AbsRel. It
+does not fix the scale. NPC tracks recover 40--43\,\% of the labelled vehicles. Per frame, the share of
+labelled vehicles detected falls from 44--49\,\% at 4--10\,m to 15--18\,\% at 20--30\,m, so distant road users
+come from the VLM description rather than from tracks.
+
+\ResultsVipePAI
 
 \ResultsUCtwo
 
@@ -537,7 +654,44 @@ fleet recordings and anything derived from them (processed on the Thor only; agg
 frames under non-redistribution licences (PhysicalAI-AV: internal validation only), and incident records.
 
 \section{Conclusion and next steps}
-\todo{fill after results}
+All five use cases now run end to end on one Jetson AGX Thor. The steps are:
+\begin{enumerate}[leftmargin=1.4em,itemsep=0pt]
+\item \emph{Lift.} A source (text, dash-cam video, incident, sensor snippet with ground truth, negative snippet)
+  becomes a verified TSIR.
+\item \emph{Export.} The TSIR is written to OpenDRIVE, OpenSCENARIO XML and DSL, and packaged as IMDAD~v2.
+\item \emph{Render.} Cosmos3-Nano-Sim-Auto generates camera and LiDAR data; for UC3 and UC5 the negative is
+  rendered too.
+\item \emph{Augment.} Variants are derived along the three dimensions, automatically or from the user's words.
+\item \emph{Evaluate.} Policies are scored by EPDMS in closed loop. In the neural tier (T1), REFe SFT-4 drives on
+  frames that Cosmos generates from the closed-loop world (EPDMS 0.876 on the UC1 left turn).
+\end{enumerate}
+
+The consistent lesson is where the LLM may decide and where it must not. Quantities that were measured or that
+follow from geometry are now pinned deterministically:
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item the ego speed profile, the signal phase and the road length in UC2;
+\item lane-relative placement facts for static objects in manual augmentation;
+\item length-bounded documentation fields, after a variant's free-text field looped until the token limit.
+\end{itemize}
+The verifier ladder's diagnostics carry the remaining repairs, and every pin above was found by a diagnostic or a
+fidelity metric that did not match. A diagnostic that names the cause (``the ego brakes for barrier\_1'') repairs
+faster than one that names only the symptom (``peak deceleration 4.5\,m/s$^2$'').
+
+\paragraph{Open items.}
+\begin{itemize}[leftmargin=1.4em,itemsep=0pt]
+\item \emph{UC5 LiDAR.} The generated range differs from the control by 4.2--4.8\,m median; the other use cases
+  stay at 0.2--0.4\,m.
+\item \emph{UC2 geometry.} ViPE's metric scale (Cosmos inverse dynamics supplies the speed instead) and its NPC
+  recall beyond 20\,m. UC2 lifts still vary from run to run: a replay can place a vehicle in the ego's lane where
+  the video shows it in the next one. Track-derived NPC lanes should be pinned like the ego.
+\item \emph{UC4/UC5 late NPCs.} Late-appearing road users need a spawn-at-first-sighting action instead of
+  back-extrapolation.
+\item \emph{Augmentation judge.} The VLM camera judge sits at its threshold for small added objects (the automatic
+  road-works variant passed at 0.5 on a second seed).
+\item \emph{T1 cost.} T1 costs about 140$\times$ real time per scenario. Longer horizons are needed for turns to
+  complete, and more scenarios before policy comparisons mean anything.
+\item \emph{Tooling.} Static objects on imported OpenDRIVE maps, and drawing them in the console's scene view.
+\end{itemize}
 
 \begin{thebibliography}{99}\small
 \bibitem{harness2} C.-Y.~Lee, T.~Pfister et al. Harness$^2$: Recursive agent harnessing for an open world. arXiv:2610.14224, 2026.

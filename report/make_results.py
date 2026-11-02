@@ -283,8 +283,8 @@ def augment(root: Path) -> str:
 def sensors(runs: list[dict]) -> str:
     """Joint camera + LiDAR generation per use case (latest run with a sensors stage), LiDAR vs. HD-map control."""
     rows = []
-    for r in sorted(_latest([x for x in runs if x.get("sensors")], ("uc1", "uc2", "uc3", "uc4", "uc5")),
-                    key=lambda x: x["uc"]):
+    newest = {r["uc"]: r for r in runs if r.get("sensors") and r["uc"] in ("uc1", "uc2", "uc3", "uc4", "uc5")}
+    for r in sorted(newest.values(), key=lambda x: x["uc"]):                 # run dirs sort by creation time
         for key, tag in (("sensors", ""), ("sensors_negative", " neg.")):
             s = r.get(key)
             if not s:
