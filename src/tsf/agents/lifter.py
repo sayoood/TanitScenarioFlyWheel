@@ -33,6 +33,7 @@ Scalar = str | float | int | bool | None
 # ----------------------------------------------------------------------------- step schemas
 # bounded free text: with many lifted road users an unbounded analysis ran past max_tokens (truncated JSON)
 Text = Annotated[str, StringConstraints(max_length=400)]
+Name = Annotated[str, StringConstraints(max_length=80)]
 
 
 class ActorInfo(BaseModel):
@@ -79,85 +80,87 @@ class Analysis(BaseModel):
     mathematicalCorpus: list[Text] = Field(..., min_length=2, max_length=8)
 
 
+# the documentation is bounded the same way: a road-works variant (9 static objects) looped inside one free-text string
+# until max_tokens, twice (JSONDecodeError: unterminated string)
 class ShortDesc(BaseModel):
-    title: str
-    keywords: list[str]
-    tags: list[str]
+    title: str = Field(max_length=160)
+    keywords: list[Name] = Field(..., max_length=12)
+    tags: list[Name] = Field(..., max_length=12)
 
 
 class InitialState(BaseModel):
-    actorId: str
+    actorId: Name
     longitudinalPosition: float
-    lateralPosition: str
+    lateralPosition: Name
     speed: float
 
 
 class FinalState(BaseModel):
-    actorId: str
-    condition: str
+    actorId: Name
+    condition: Text
 
 
 class EventDesc(BaseModel):
-    id: str
-    trigger: str
-    action: str
+    id: Name
+    trigger: Text
+    action: Text
 
 
 class AgentBehavior(BaseModel):
-    agentId: str
-    behavior: list[str]
+    agentId: Name
+    behavior: list[Text] = Field(..., max_length=8)
 
 
 class BehaviorSequence(BaseModel):
-    ego: list[str]
-    agents: list[AgentBehavior]
+    ego: list[Text] = Field(..., max_length=10)
+    agents: list[AgentBehavior] = Field(..., max_length=16)
 
 
 class DynEnv(BaseModel):
-    id: str
-    type: str
-    description: str
+    id: Name
+    type: Name
+    description: Text
 
 
 class StaticElement(BaseModel):
-    element: str
-    description: str
+    element: Name
+    description: Text
 
 
 class CodeBeamer(BaseModel):
     shortScenarioDescription: ShortDesc
-    scenarioCategory: str
-    initialStates: list[InitialState]
-    finalStates: list[FinalState]
+    scenarioCategory: Name
+    initialStates: list[InitialState] = Field(..., max_length=16)
+    finalStates: list[FinalState] = Field(..., max_length=16)
     environmentConditions: dict[str, Scalar]
     roadDescription: dict[str, Scalar]
-    staticEnvironment: list[StaticElement]
-    dynamicEnvironment: list[DynEnv]
-    events: list[EventDesc]
+    staticEnvironment: list[StaticElement] = Field(..., max_length=16)
+    dynamicEnvironment: list[DynEnv] = Field(..., max_length=16)
+    events: list[EventDesc] = Field(..., max_length=12)
     behaviorSequence: BehaviorSequence
 
 
 class Requirement(BaseModel):
-    id: str
-    requirement: str
-    passCriteria: list[str]
+    id: Name
+    requirement: Text
+    passCriteria: list[Text] = Field(..., max_length=6)
 
 
 class VariableInterval(BaseModel):
-    variable: str
-    minValue: str | None = None
-    maxValue: str | None = None
-    description: str | None = None
+    variable: Name
+    minValue: Name | None = None
+    maxValue: Name | None = None
+    description: Text | None = None
 
 
 class Variations(BaseModel):
-    description: str
-    variableIntervals: list[VariableInterval]
+    description: Text
+    variableIntervals: list[VariableInterval] = Field(..., max_length=12)
 
 
 class Narrative(BaseModel):
-    functionalRequirementsSummary: str
-    improvementsSummary: list[str]
+    functionalRequirementsSummary: str = Field(max_length=800)
+    improvementsSummary: list[Text] = Field(..., max_length=8)
     codeBeamerScenarioDescription: CodeBeamer
     derivedFunctionalRequirements: list[Requirement] = Field(..., min_length=2, max_length=6)
     scenarioVariations: Variations
