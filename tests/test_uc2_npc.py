@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from tsf.agents.video import (
     drop_actor,
+    fit_road_length,
     infer_action_types,
     move_signs_off_the_road,
     npc_fidelity,
@@ -190,6 +191,21 @@ def test_signal_phase_follows_the_measured_departure():
     assert sp.state(arm, turn, 8.5) != "green" and sp.state(arm, turn, 9.2) == "green"   # waits, then pulls away
     sp = SignalPlan(Scenario.model_validate(pin_ego_signal(copy.deepcopy(d), t, np.full_like(t, 12.0))))
     assert sp.state(arm, turn, 0.0) == "green"                                         # never stops
+
+
+def test_road_is_lengthened_to_hold_the_measured_ego_and_the_traffic_ahead():
+    d = copy.deepcopy(EXAMPLE)
+    d["duration"] = 20.0
+    d["road"]["segments"] = [{**d["road"]["segments"][0], "length": 150.0} for _ in range(3)]
+    t = np.arange(0.0, 20.5, 0.5)
+    out = fit_road_length(copy.deepcopy(d), t, np.full_like(t, 25.8))               # ~515 m in 20 s
+    ego = next(a for a in out["actors"] if a["role"] == "ego")
+    total = sum(s["length"] for s in out["road"]["segments"])
+    assert total >= ego["initial"]["s"] + 515.0 and out["road"]["segments"][0]["length"] == 150.0
+    for a in out["actors"]:
+        if a["initial"].get("direction", "forward") == "forward":
+            assert total >= a["initial"]["s"] + (a.get("initial_speed") or 0.0) * 20.0
+    Scenario.model_validate(out)
 
 
 def test_road_without_oncoming_lanes_gets_no_oncoming_or_crossing_users():

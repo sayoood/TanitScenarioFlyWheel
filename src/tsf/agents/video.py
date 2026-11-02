@@ -275,6 +275,28 @@ def pin_ego_signal(tsir: dict, t: np.ndarray, v: np.ndarray, v_go: float = 1.0) 
     return tsir
 
 
+def fit_road_length(tsir: dict, t: np.ndarray, v: np.ndarray, margin_m: float = 30.0) -> dict:
+    """Lengthen a linear road so that the measured ego and every forward road user stay on it for the whole scenario.
+    The model sized the road (amuldGGgNc4: 3 x 150 m for an ego that covers 515 m); a car ahead parked at the road's
+    end and the ego ran into it, which the repairs read as an NPC gap problem."""
+    road = tsir.get("road") or {}
+    segs = road.get("segments") or []
+    ego = next((a for a in tsir.get("actors", []) if a.get("role") == "ego"), None)
+    if road.get("type") != "linear" or not segs or ego is None or len(t) < 2:
+        return tsir
+    dur = float(tsir.get("duration") or t[-1])
+    keep = np.asarray(t) <= dur + 1e-6
+    tt, vv = np.asarray(t)[keep], np.asarray(v)[keep]
+    need = float(ego["initial"].get("s", 0.0)) + float(np.sum(0.5 * (vv[1:] + vv[:-1]) * np.diff(tt)))
+    for a in tsir["actors"]:
+        if a.get("role") != "ego" and a.get("initial", {}).get("direction", "forward") == "forward":
+            need = max(need, float(a["initial"].get("s", 0.0)) + float(a.get("initial_speed") or 0.0) * dur)
+    have = sum(float(s.get("length", 0.0)) for s in segs)
+    if have < need + margin_m:
+        segs[-1]["length"] = round(float(segs[-1].get("length", 0.0)) + need + margin_m - have, 1)
+    return tsir
+
+
 def speed_fidelity(rep, ego: dict) -> dict:
     """Simulated vs ViPE ego speed (MAE, km/h) over the common horizon."""
     if not hasattr(rep, "_log"):
@@ -630,7 +652,7 @@ def lift_video(video: str, workdir: Path, llm: LLM | None = None, max_seconds: f
 
     def pin(d: dict) -> dict:
         d = pin_ego_assertions(pin_ego_speed(infer_action_types(move_signs_off_the_road(d)), tv, vv), tv, vv)
-        d = pin_ego_signal(d, tv, vv)
+        d = fit_road_length(pin_ego_signal(d, tv, vv), tv, vv)
         return pin_npcs(d, npcs)        # also without measurements: nobody starts behind the ego
 
     res: LiftResult = Lifter(llm).lift(query, wd / "lift", sid=_slug("video " + path.stem, 40), on_stage=on_stage,

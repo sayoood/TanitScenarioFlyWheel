@@ -35,7 +35,7 @@ def _f(v, d=2, unit=""):
         return f"{v}{unit}"
     if isinstance(v, float):
         return f"{v:.{d}f}{unit}"
-    return str(v).replace("_", r"\_")
+    return str(v).replace("_", r"\_").replace("%", r"\%")
 
 
 def _stage(r: dict, name: str):
@@ -43,11 +43,14 @@ def _stage(r: dict, name: str):
 
 
 def table(caption: str, label: str, cols: str, head: list[str], rows: list[list], note: str = "") -> str:
-    body = "\n".join(" & ".join(_f(c) if not isinstance(c, str) else c.replace("_", r"\_") for c in r) + r" \\"
+    body = "\n".join(" & ".join(_f(c) if not isinstance(c, str) else c.replace("_", r"\_").replace("%", r"\%")
+                                for c in r) + r" \\"
                      for r in rows) or r"\multicolumn{%d}{c}{no runs yet} \\" % len(head)
     return (r"\begin{table}[h]\centering\small\caption{%s}\label{%s}" % (caption, label) +
+            r"\begin{adjustbox}{max width=\linewidth}" +                 # wide tables shrink, narrow ones stay
             r"\begin{tabular}{@{}%s@{}}\toprule " % cols + " & ".join(head) + r" \\\midrule" + "\n" + body +
-            r"\bottomrule\end{tabular}" + (r"\par\smallskip{\footnotesize %s}" % note if note else "") + r"\end{table}")
+            r"\bottomrule\end{tabular}\end{adjustbox}" + (r"\par\smallskip{\footnotesize %s}" % note if note else "") +
+            r"\end{table}")
 
 
 def uc1(runs: list[dict]) -> str:
@@ -99,17 +102,19 @@ def uc2(runs: list[dict]) -> str:
     rows = []
     for r in _latest(runs, ("uc2",)):
         k, e = r.get("kpis") or {}, (r.get("uc2") or {}).get("ego") or {}
-        st = sorted((Path(r["_dir"]) / "uc2" / "vipe").glob("w*/stats.json"))
+        st = (sorted((Path(r["_dir"]) / "uc2" / "vipe").glob("w*/stats.json")) or       # replays: the stored ViPE run
+              sorted(Path((r.get("options") or {}).get("vipe_dir") or "/nonexistent").glob("w*/stats.json")))
         h = [(json.loads(p.read_text()).get("camera_height") or {}).get("median_m") for p in st]
         h = [x for x in h if x]
         rows.append([r["input"]["video"].split(":")[1], (r.get("uc2") or {}).get("ego_source") or "vipe",
                      e.get("duration_s"), sum(h) / len(h) if h else None,
                      e.get("distance_m"), max(e.get("speed_kmh_per_s") or [0]), k.get("uc2_speed_mae_kmh"),
-                     k.get("final_valid"), k.get("repairs"), k.get("package_valid"), k.get("epdms")])
-    return table("UC2 on three CC-BY dash-cam clips without ego-motion data: ViPE ego track (15 fps, 480p, 20 s "
-                 "windows), validity of the lifted scenario and how closely the simulated ego follows the measured "
-                 "speed.", "tab:uc2", "llrrrrrcccr",
-                 ["clip", "ego", "s", "cam.~h m", "dist. m", "peak km/h", "speed MAE km/h", "valid", "rep.", "pkg", "EPDMS"],
+                     k.get("final_valid"), k.get("repairs"), k.get("package_valid"), k.get("epdms_scenario"), k.get("epdms")])
+    return table("UC2 on three CC-BY dash-cam clips without ego-motion data: ego track (ego column: speed from "
+                 "Cosmos3-Edge inverse dynamics and heading from ViPE, or ViPE alone), validity of the lifted scenario, "
+                 "how closely the simulated ego follows the measured speed, and EPDMS of the scripted scenario and of "
+                 "the constant-velocity policy.", "tab:uc2", "llrrrrrcccrr",
+                 ["clip", "ego", "s", "cam.~h m", "dist. m", "peak km/h", "speed MAE km/h", "valid", "rep.", "pkg", "EPDMS scn.", "EPDMS pol."],
                  rows, r"Clips by YouTube user a62dave under the Creative Commons Attribution licence: "
                        r"youtu.be/amuldGGgNc4, youtu.be/dToIIqqvSt0, youtu.be/qdAI\_quNcqw. Video, frames and every "
                        r"derivative stay on the Thor; only these aggregate numbers are published.")
