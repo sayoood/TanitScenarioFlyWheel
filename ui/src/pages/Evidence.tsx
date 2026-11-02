@@ -2,14 +2,15 @@ import { Film, Lock } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { Chip, EmptyState, PageHeader, Panel, Segmented, Skeleton, type Tone } from "../components/ui/primitives";
+import { ucMeta } from "../lib/meta";
 import { useApi } from "../lib/provider";
 import { useEvidence } from "../lib/hooks";
 import type { EvidenceItem } from "../lib/types";
 
 const KIND: Record<EvidenceItem["kind"], { label: string; tone: Tone; what: string }> = {
-  uc5: { label: "UC5 twin", tone: "ok", what: "Lifted NEGATIVE log | POSITIVE twin (same road users, new ego plan)" },
-  uc3: { label: "UC3 twin", tone: "ok", what: "Verified positive twin of a real incident, with closed loop" },
-  uc2: { label: "UC2 dash-cam", tone: "info", what: "Dash-cam clip | scenario re-created from ViPE ego motion + VLM scene" },
+  uc5: { label: ucMeta("uc5").short, tone: "ok", what: "Lifted NEGATIVE log | POSITIVE twin (same road users, new ego plan)" },
+  uc3: { label: ucMeta("uc3").short, tone: "ok", what: "Verified positive twin of a real incident, with closed loop" },
+  uc2: { label: ucMeta("uc2").short, tone: "info", what: "Dash-cam clip | scenario re-created from ViPE ego motion + VLM scene" },
   closed_loop: { label: "Closed loop", tone: "accent", what: "Test policies driving the verified scenario" },
   ablation: { label: "Ablation", tone: "warn", what: "One-shot prompt (left) | agentic + verifier repair (right)" },
 };

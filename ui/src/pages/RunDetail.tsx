@@ -14,7 +14,7 @@ import { StageTimeline } from "../components/run/StageTimeline";
 import { CodeBlock } from "../components/run/CodeBlock";
 import { Chip, EmptyState, Panel, Skeleton } from "../components/ui/primitives";
 import { bytes, duration, shortDate } from "../lib/format";
-import { ucMeta } from "../lib/meta";
+import { displayTitle, ucMeta } from "../lib/meta";
 import { useRun, useScene } from "../lib/hooks";
 import { useApi } from "../lib/provider";
 import type { RunDetail } from "../lib/types";
@@ -125,7 +125,7 @@ export default function RunDetailPage() {
               <StatusChip status={r.status} />
               <span className="text-[12.5px] text-fg-2">{uc.name}</span>
             </div>
-            <h1 className="max-w-4xl text-[26px] leading-tight font-semibold text-fg">{r.title}</h1>
+            <h1 className="max-w-4xl text-[26px] leading-tight font-semibold text-fg">{displayTitle(r.title)}</h1>
             <div className="mono mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-fg-2">
               <button className="inline-flex items-center gap-1.5 hover:text-fg" onClick={() => void navigator.clipboard?.writeText(r.id)} title="Copy run id">
                 {r.id} <Copy size={12} />

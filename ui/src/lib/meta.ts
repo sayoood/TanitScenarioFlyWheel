@@ -11,17 +11,20 @@ export interface UcMeta {
 }
 
 export const USE_CASES: UcMeta[] = [
-  { id: "uc1", short: "UC1", name: "Text to scenario", blurb: "Natural-language query lifted into TSIR.", inputLabel: "Query", color: "var(--color-uc1)" },
-  { id: "uc2", short: "UC2", name: "Dashcam video", blurb: "Reconstruct a drive and replay it as a scenario.", inputLabel: "Video", color: "var(--color-uc2)" },
-  { id: "uc3", short: "UC3", name: "Incident to positive twin", blurb: "Counterfactual twin of an IMDAD NEGATIVE record.", inputLabel: "Incident", color: "var(--color-uc3)" },
-  { id: "uc4", short: "UC4", name: "Sensor snippet augmentation", blurb: "Semantic variants of a logged snippet.", inputLabel: "Snippet", color: "var(--color-uc4)" },
-  { id: "uc5", short: "UC5", name: "Negative snippet to corrective data", blurb: "Positive twin plus variations for a failure.", inputLabel: "Snippet", color: "var(--color-uc5)" },
+  { id: "uc1", short: "Text2Scenario", name: "Text to scenario", blurb: "Natural-language query lifted into TSIR.", inputLabel: "Query", color: "var(--color-uc1)" },
+  { id: "uc2", short: "Dashcam2Scenario", name: "Dashcam video", blurb: "Reconstruct a drive and replay it as a scenario.", inputLabel: "Video", color: "var(--color-uc2)" },
+  { id: "uc3", short: "Incident2Twin", name: "Incident to positive twin", blurb: "Counterfactual twin of an IMDAD NEGATIVE record.", inputLabel: "Incident", color: "var(--color-uc3)" },
+  { id: "uc4", short: "Log2Variants", name: "Sensor snippet augmentation", blurb: "Semantic variants of a logged snippet.", inputLabel: "Snippet", color: "var(--color-uc4)" },
+  { id: "uc5", short: "NegLog2Twin", name: "Negative snippet to corrective data", blurb: "Positive twin plus variations for a failure.", inputLabel: "Snippet", color: "var(--color-uc5)" },
 ];
 
 const AUGMENT_UC: UcMeta = { id: "uc1", short: "AUG", name: "Scenario augmentation", blurb: "Weather, behaviour and environment variants of a verified scenario.", inputLabel: "Parent run", color: "var(--color-accent-2)" };
 
 export const ucMeta = (id: string): UcMeta =>
   USE_CASES.find((u) => u.id === id) ?? (id === "augment" ? AUGMENT_UC : undefined) ?? { id: "uc1", short: id.toUpperCase(), name: id, blurb: "", inputLabel: "Input", color: "var(--color-fg-1)" };
+
+/** Run titles from the Thor start with "UC2 - ..."; show the technical use-case name instead. */
+export const displayTitle = (title: string): string => title.replace(/^UC([1-5])\b/, (_, n: string) => ucMeta(`uc${n}`).short);
 
 export const STAGE_LABEL: Record<StageName, string> = {
   brief: "Brief",
@@ -100,7 +103,12 @@ export const POLICIES = [
   { id: "accel_decel", label: "Accelerate / decelerate", description: "Speeds up, then brakes to standstill" },
 ];
 
-export const RESOLUTIONS = ["480p", "720p", "1080p"];
+export const RESOLUTIONS = ["480p", "720p"]; // the Sim-Auto presets (832x480, 1280x720)
+
+/** Cameras the sensors stage renders, in the order the Thor picks them for a view count (runs.py _RENDER_CAMS). */
+export const RENDER_CAMERAS = ["front_wide", "cross_left", "cross_right", "rear_left", "rear_right", "front_tele", "rear_tele"];
+/** 3 views + LiDAR is the validated setting; more views cost memory next to the resident LLM and REFe servers. */
+export const MAX_RENDER_VIEWS = 5;
 
 export const UC1_EXAMPLES = [
   "Generate data from a scenario where the ego vehicle changes the lane to the left to turn left in an intersection with traffic light at day in good weather conditions with vehicles surrounding",

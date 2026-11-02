@@ -3,11 +3,10 @@ import { useState } from "react";
 import clsx from "clsx";
 import { Chip, Field, PageHeader, Panel, Segmented, Slider, Toggle } from "../components/ui/primitives";
 import { useConfig, usePutConfig } from "../lib/hooks";
-import { AUGMENT_STRATEGIES, POLICIES, RESOLUTIONS } from "../lib/meta";
+import { AUGMENT_STRATEGIES, POLICIES, MAX_RENDER_VIEWS, RENDER_CAMERAS, RESOLUTIONS } from "../lib/meta";
 import { probe } from "../lib/live";
 import { useApi } from "../lib/provider";
 import { DEFAULT_SETTINGS, THOR_URL, resetSettings, useSettings, type ApiMode } from "../lib/settings";
-import { CAMERA_NAMES } from "../lib/types";
 
 function ConnectionPanel() {
   const [s, update] = useSettings();
@@ -122,9 +121,9 @@ function DefaultsPanel() {
         <div className="space-y-5">
           <div className="eyebrow">Rendering</div>
           <Field label={<>Camera views: <span className="num text-fg">{s.render.views}</span></>}>
-            <Slider label="Camera views" value={s.render.views} min={1} max={7} onChange={(views) => update({ render: { ...s.render, views } })} />
+            <Slider label="Camera views" value={s.render.views} min={1} max={MAX_RENDER_VIEWS} onChange={(views) => update({ render: { ...s.render, views } })} />
             <div className="mt-2 flex flex-wrap gap-1.5">
-              {CAMERA_NAMES.map((c, i) => (
+              {RENDER_CAMERAS.map((c, i) => (
                 <Chip key={c} tone={i < s.render.views ? "info" : "neutral"} className={clsx(i >= s.render.views && "opacity-50")}>
                   {c}
                 </Chip>

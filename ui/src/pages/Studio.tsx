@@ -7,9 +7,8 @@ import { CodeBlock } from "../components/run/CodeBlock";
 import { Chip, Field, PageHeader, Panel, Segmented, Slider, Toggle } from "../components/ui/primitives";
 import { duration } from "../lib/format";
 import { useConfig, useCreateRun, useIncidents, useKpis } from "../lib/hooks";
-import { AUGMENT_STRATEGIES, POLICIES, RESOLUTIONS, UC1_EXAMPLES, UC_EXAMPLE_INPUTS, USE_CASES } from "../lib/meta";
+import { AUGMENT_STRATEGIES, POLICIES, MAX_RENDER_VIEWS, RENDER_CAMERAS, RESOLUTIONS, UC1_EXAMPLES, UC_EXAMPLE_INPUTS, USE_CASES } from "../lib/meta";
 import { useSettings } from "../lib/settings";
-import { CAMERA_NAMES } from "../lib/types";
 import type { CreateRunRequest, RunInput, RunOptions, UseCaseId } from "../lib/types";
 
 const INCIDENTS: Record<string, string> = {
@@ -71,12 +70,19 @@ export default function Studio() {
   const [augOn, setAugOn] = useState(true);
   const [aug, setAug] = useState(settings.augment);
   const [renOn, setRenOn] = useState(true);
-  const [ren, setRen] = useState(settings.render);
+  const [ren, setRen] = useState({ ...settings.render, views: Math.min(settings.render.views, MAX_RENDER_VIEWS) });
   const [clOn, setClOn] = useState(false);
   const [cl, setCl] = useState(settings.closedLoop);
 
   const strategies = config.data?.augmentation?.strategies?.map((s) => ({ ...AUGMENT_STRATEGIES.find((a) => a.id === s.id), id: s.id, label: s.label ?? s.id, description: s.description ?? AUGMENT_STRATEGIES.find((a) => a.id === s.id)?.description ?? "" })) ?? AUGMENT_STRATEGIES;
-  const policies = config.data?.closed_loop?.policies?.map((p) => ({ id: p.id, label: p.label ?? p.id, description: p.description ?? POLICIES.find((x) => x.id === p.id)?.description ?? "" })) ?? POLICIES;
+  // the Thor sends {id: {tier, desc}}; older configs sent [{id, label, description}]
+  const cfgPolicies = config.data?.closed_loop?.policies;
+  const policies = cfgPolicies
+    ? (Array.isArray(cfgPolicies) ? cfgPolicies : Object.entries(cfgPolicies).map(([id, p]) => ({ id, description: p.desc }))).map((p) => {
+        const known = POLICIES.find((x) => x.id === p.id);
+        return { id: p.id, label: ("label" in p && p.label) || known?.label || p.id, description: p.description ?? known?.description ?? "" };
+      })
+    : POLICIES;
 
   const input: RunInput | null = useMemo(() => {
     if (uc === "uc1") return query.trim() ? { query: query.trim() } : null;
@@ -211,12 +217,12 @@ export default function Studio() {
             </Field>
           </Section>
 
-          <Section title="Rendering" hint="WSM + Cosmos 3 Transfer-Auto" enabled={renOn} onToggle={setRenOn} icon={<Film size={16} className="text-accent-2" />}>
+          <Section title="Rendering" hint="Cosmos3 Sim-Auto: cameras + LiDAR" enabled={renOn} onToggle={setRenOn} icon={<Film size={16} className="text-accent-2" />}>
             <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
               <Field label={<>Camera views: <span className="num text-fg">{ren.views}</span></>}>
-                <Slider label="Camera views" value={ren.views} min={1} max={7} onChange={(views) => setRen((r) => ({ ...r, views }))} />
+                <Slider label="Camera views" value={ren.views} min={1} max={MAX_RENDER_VIEWS} onChange={(views) => setRen((r) => ({ ...r, views }))} />
                 <div className="mt-2.5 flex flex-wrap gap-1.5">
-                  {CAMERA_NAMES.map((c, i) => (
+                  {RENDER_CAMERAS.map((c, i) => (
                     <Chip key={c} tone={i < ren.views ? "info" : "neutral"} className={clsx(i >= ren.views && "opacity-50")}>
                       {c}
                     </Chip>
@@ -244,7 +250,7 @@ export default function Studio() {
             <div className="flex items-center justify-between gap-4 rounded-xl border border-line bg-bg/50 px-3.5 py-3">
               <div>
                 <div className="text-[13px] font-semibold text-fg">128-beam LiDAR range maps</div>
-                <div className="text-[12px] text-fg-2">Rendered alongside the cameras and passed to Transfer-Auto as control.</div>
+                <div className="text-[12px] text-fg-2">Generated jointly with the cameras (Sim-Auto joint mode) and checked against the control range maps.</div>
               </div>
               <Toggle checked={ren.lidar} onChange={(lidar) => setRen((r) => ({ ...r, lidar }))} label="LiDAR" />
             </div>
@@ -295,7 +301,7 @@ export default function Studio() {
               </ol>
               {renOn && (
                 <div className="mt-4 rounded-xl border border-line bg-bg/50 p-3 text-[12.5px] text-fg-1">
-                  Cosmos Transfer estimate: <span className="num font-semibold text-fg">{duration(renderEstimate)}</span> at {sPerFrame.toFixed(2)} s per frame and view.
+                  Cosmos estimate: <span className="num font-semibold text-fg">{duration(renderEstimate)}</span> at {sPerFrame.toFixed(2)} s per frame and view.
                 </div>
               )}
               <button className="btn btn-primary mt-4 h-11 w-full text-[14px]" disabled={!body || create.isPending} onClick={submit}>

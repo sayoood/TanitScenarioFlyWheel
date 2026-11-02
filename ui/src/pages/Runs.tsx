@@ -7,7 +7,7 @@ import { StatusChip, UcBadge } from "../components/common";
 import { EmptyState, PageHeader, Panel, Skeleton } from "../components/ui/primitives";
 import { duration, timeAgo } from "../lib/format";
 import { useRuns } from "../lib/hooks";
-import { USE_CASES } from "../lib/meta";
+import { displayTitle, USE_CASES } from "../lib/meta";
 
 export default function Runs() {
   const runs = useRuns(100);
@@ -82,7 +82,7 @@ export default function Runs() {
                     </td>
                     <td className="max-w-[560px]">
                       <Link to={`/runs/${r.id}`} className="block truncate font-medium text-fg hover:text-accent-2">
-                        {r.title}
+                        {displayTitle(r.title)}
                       </Link>
                       <span className="mono text-[11.5px] text-fg-3">{r.id}</span>
                     </td>

@@ -357,7 +357,7 @@ export interface PipelineConfig {
   };
   closed_loop?: {
     default_steps?: number;
-    policies?: { id: string; label?: string; description?: string }[];
+    policies?: { id: string; label?: string; description?: string }[] | Record<string, { tier?: string; desc?: string }>;
   };
   [k: string]: unknown;
 }

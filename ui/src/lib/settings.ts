@@ -19,9 +19,9 @@ const KEY = "tsf.settings.v1";
 export const DEFAULT_SETTINGS: Settings = {
   baseUrl: THOR_URL,
   mode: "auto",
-  render: { views: 7, res: "480p", frames: 121, lidar: true },
+  render: { views: 3, res: "480p", frames: 97, lidar: true },
   augment: { n: 8, strategies: ["weather", "time_of_day", "behavior"] },
-  closedLoop: { policy: "refe_sft4", steps: 200 },
+  closedLoop: { policy: "const_vel", steps: 200 }, // REFe needs the T1 sensor loop; API runs skip it
   reduceMotion: false,
 };
 

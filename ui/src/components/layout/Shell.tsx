@@ -17,6 +17,7 @@ import clsx from "clsx";
 import { useHealth } from "../../lib/hooks";
 import { useApi } from "../../lib/provider";
 import { useSettings } from "../../lib/settings";
+import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { LogoMark } from "../ui/Logo";
 import { Skeleton } from "../ui/primitives";
 
@@ -149,6 +150,16 @@ function PageFallback() {
   );
 }
 
+function PageError({ error }: { error: Error }) {
+  return (
+    <div className="panel p-10 text-center">
+      <h1 className="text-xl font-semibold">This page failed to render</h1>
+      <p className="mt-2 text-fg-2">{error.message}</p>
+      <p className="mt-1 text-[12px] text-fg-3">The other pages still work. Reload to try again.</p>
+    </div>
+  );
+}
+
 export function Shell(): ReactNode {
   const loc = useLocation();
   const [settings] = useSettings();
@@ -177,9 +188,12 @@ export function Shell(): ReactNode {
           transition={{ duration: 0.28, ease: [0.2, 0.7, 0.2, 1] }}
           className="mx-auto w-full max-w-[1680px] flex-1 px-6 py-7 xl:px-8"
         >
-          <Suspense fallback={<PageFallback />}>
-            <Outlet />
-          </Suspense>
+          {/* keyed by path: a page that throws shows its error instead of blanking the console, and navigating resets it */}
+          <ErrorBoundary key={loc.pathname} fallback={(e) => <PageError error={e} />}>
+            <Suspense fallback={<PageFallback />}>
+              <Outlet />
+            </Suspense>
+          </ErrorBoundary>
         </motion.main>
       </div>
     </div>

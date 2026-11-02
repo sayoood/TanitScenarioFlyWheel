@@ -2,6 +2,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import { Braces, Camera, Gauge, MessageSquareText, RefreshCcw, ShieldCheck, Siren, TriangleAlert, Video, Radar } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useId, useMemo } from "react";
+import { ucMeta } from "../../lib/meta";
 import type { StageName } from "../../lib/types";
 
 export type NodeId = "ir" | "verify" | "sim" | "render" | "loop";
@@ -50,11 +51,11 @@ const RING: { id: NodeId; label: string; sub: string; angle: number; Icon: Lucid
 ];
 
 const SOURCES: { id: string; label: string; sub: string; Icon: LucideIcon; color: string }[] = [
-  { id: "uc1", label: "UC1", sub: "Text query", Icon: MessageSquareText, color: "var(--color-uc1)" },
-  { id: "uc2", label: "UC2", sub: "Dashcam video", Icon: Video, color: "var(--color-uc2)" },
-  { id: "uc3", label: "UC3", sub: "Incident (negative)", Icon: Siren, color: "var(--color-uc3)" },
-  { id: "uc4", label: "UC4", sub: "Sensor snippet", Icon: Radar, color: "var(--color-uc4)" },
-  { id: "uc5", label: "UC5", sub: "Negative snippet", Icon: TriangleAlert, color: "var(--color-uc5)" },
+  { id: "uc1", label: ucMeta("uc1").short, sub: "Text query", Icon: MessageSquareText, color: "var(--color-uc1)" },
+  { id: "uc2", label: ucMeta("uc2").short, sub: "Dashcam video", Icon: Video, color: "var(--color-uc2)" },
+  { id: "uc3", label: ucMeta("uc3").short, sub: "Incident (negative)", Icon: Siren, color: "var(--color-uc3)" },
+  { id: "uc4", label: ucMeta("uc4").short, sub: "Sensor snippet", Icon: Radar, color: "var(--color-uc4)" },
+  { id: "uc5", label: ucMeta("uc5").short, sub: "Negative snippet", Icon: TriangleAlert, color: "var(--color-uc5)" },
 ];
 
 const pos = (deg: number, r = R): [number, number] => {

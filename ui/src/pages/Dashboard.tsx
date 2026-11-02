@@ -7,7 +7,7 @@ import { StatusChip, UcBadge } from "../components/common";
 import { RadialGauge, Sparkline } from "../components/ui/Gauge";
 import { Chip, EmptyState, PageHeader, Panel, Skeleton } from "../components/ui/primitives";
 import { fmt, pct, timeAgo, duration } from "../lib/format";
-import { STAGE_LABEL } from "../lib/meta";
+import { displayTitle, STAGE_LABEL } from "../lib/meta";
 import { useLogLines } from "../lib/events";
 import { useActivity, useHarness, useHealth, useKpis, useRuns } from "../lib/hooks";
 import { useSettings } from "../lib/settings";
@@ -191,7 +191,7 @@ function RecentRuns() {
                 </td>
                 <td className="max-w-[420px]">
                   <Link to={`/runs/${r.id}`} className="block truncate font-medium text-fg hover:text-accent-2">
-                    {r.title}
+                    {displayTitle(r.title)}
                   </Link>
                   <span className="mono text-[11.5px] text-fg-3">{r.id}</span>
                 </td>
