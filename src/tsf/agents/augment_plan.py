@@ -215,7 +215,36 @@ def _site(d: dict) -> dict:
             exits = {"arm": e[0], "free": [k for k in range(n_out, 0, -1) if k not in taken], "ego_lane": e[1],
                      "length": road["approaches"][e[0]]["length"]}
     return {"junction": junction, "arm": arm, "direction": direction, "n": n, "ego_lane": p.get("lane", 1), "s0": p["s"],
-            "sgn": sgn, "length": length, "free": free, "exit": exits}
+            "sgn": sgn, "length": length, "free": free, "exit": exits, "used": sorted(used | busy),
+            "w": cfg.get("lane_width", 3.5)}
+
+
+def placement_facts(d: dict, reach: float | None = None) -> str:
+    """Where static objects can stand without blocking an agent, for a free-text (manual) environment request. The
+    automatic levers carry these coordinates; a user's words do not (a request for road works at the roadside put
+    the cones at t_offset -1.4 inside the ego's lane, twice, and the repairs then moved the agents)."""
+    st = _site(d)
+    edge = st["w"] / 2
+    where = f"arm {st['arm']} {st['direction']}" if st["junction"] else f"the {st['direction']} lanes"
+    s_dir = "the distance to the stop line and SHRINKS while driving" if st["sgn"] < 0 else "grows while driving"
+    ahead = f"s < {st['s0']:.0f}" if st["sgn"] < 0 else f"s > {st['s0']:.0f}"
+    txt = (f"Placement facts. TanitSim treats every cone, barrier, sign and parked vehicle as a standing obstacle: an "
+           f"agent brakes for one that stands within ~1.5 m of its lane centre. On {where} lanes count from the centre "
+           f"line: lane 1 is the innermost, lane {st['n']} the outermost (right) lane, {st['w']:g} m wide (lane edges "
+           f"at t_offset +-{edge:g}). The ego starts in lane {st['ego_lane']} at s={st['s0']:.0f}; s is {s_dir}, so "
+           f"objects ahead of the ego have {ahead}. Lanes the ego or another agent drives there: {st['used']}; free "
+           f"lanes: {st['free'] or 'none'}. Roadside or shoulder objects go into lane {st['n']} with t_offset "
+           f"-{edge + 0.65:.1f} to -{edge + 0.85:.1f} (signs, cones, barriers) or -{edge + 1.65:.1f} (a parked vehicle); "
+           f"nothing between t_offset -{edge + 0.6:.1f} and +{edge + 0.6:.1f} of a driven lane. Cones inside a lane (a "
+           "closure) only in a free lane.")
+    ex = st["exit"]
+    if ex:
+        txt += (f" The ego leaves the junction by arm {ex['arm']} (direction outbound, lane {ex['ego_lane']}; there s is "
+                "the distance from the junction and grows" +
+                (f"; the ego gets to s={reach:.0f} before the scenario ends" if reach is not None else "") +
+                f"); free outbound lanes there: {ex['free'] or 'none'}.")
+    return txt + (" Never move, re-time or remove agents to make room: the isolation check rejects that. Fit the "
+                  "objects to the traffic instead.")
 
 
 def _s(site: dict, ahead: float) -> float:

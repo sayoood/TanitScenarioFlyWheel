@@ -203,6 +203,24 @@ def l2_static_objects(sc: Scenario, m) -> list[Finding]:
 
 
 # ----------------------------------------------------------------------------- L3
+def _static_blocker(log, e: int, i: int) -> str:
+    """Repair hint naming the standing object the ego brakes for at step i (nearest body ahead whose footprint overlaps
+    the ego's path, as in TanitSim's leader search), else ''. Without it the repairer moved the agents instead."""
+    x, y, yaw = (float(c) for c in log.states[i, e, :3])
+    c, s = math.cos(yaw), math.sin(yaw)
+    best = None
+    for b in getattr(log, "static", ()):
+        lon, lat = c * (b.x - x) + s * (b.y - y), -s * (b.x - x) + c * (b.y - y)
+        if 0 < lon < 60 and abs(lat) <= log.lwh[e, 1] / 2 + b.extent(yaw)[1] + 0.25 and (best is None or lon < best[0]):
+            best = (lon, b)
+    if best is None:
+        return ""
+    lon, b = best
+    return (f". The ego brakes for the standing {b.kind} '{b.id}' {lon:.0f} m ahead, {b.t:+.1f} m from the centre of its "
+            "lane: an object inside a driven lane blocks it. Move such objects beyond the lane edge (outermost lane, "
+            "t_offset <= -2.4 on the right) or into a lane no agent drives; do not move the agents")
+
+
 def l3_assertions(sc: Scenario, log) -> list[Finding]:
     """Simulation oracle. Failure messages carry quantitative repair hints (the repairer's main signal)."""
     mt, out = log.metrics, []
@@ -234,7 +252,8 @@ def l3_assertions(sc: Scenario, log) -> list[Finding]:
             ti = float(log.t[int(np.argmin(log.states[:, e, 4]))])
             msg = "" if ok else (f"ego peak decel {mt['ego_max_decel']} m/s2 > {a.value} at t={ti:.1f}s. Give the ego "
                                  "more distance/time before the braking event, or relax the threshold (normal urban "
-                                 "braking is 2.5-4 m/s2) unless the request demands gentle braking")
+                                 "braking is 2.5-4 m/s2) unless the request demands gentle braking"
+                                 + _static_blocker(log, e, int(np.argmin(log.states[:, e, 4]))))
         elif k == "ego_speed_between":
             ok = bool((v >= (a.value or 0) - 0.3).all() and (v <= (a.value2 or 1e9) + 0.3).all())
             msg = "" if ok else f"ego speed range [{v.min():.1f}, {v.max():.1f}] m/s outside [{a.value}, {a.value2}]"

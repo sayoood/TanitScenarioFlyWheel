@@ -176,6 +176,7 @@ class Spec:
     requests: dict = field(default_factory=dict)      # manual: dimension -> free text
     target: dict | None = None                         # auto D1: planned environment
     levers: dict = field(default_factory=dict)         # auto D2 / D3: dimension -> [(id, text)]
+    facts: dict = field(default_factory=dict)          # manual D3: dimension -> placement facts for static objects
     seed: int = 0
 
 
@@ -245,6 +246,8 @@ class ScenarioAugmenter:
                                    "other agents can still do their parent manoeuvres in the remaining lanes (a lane change "
                                    "or turn needs its lanes): otherwise keep the lane count and apply only the safe part "
                                    "(e.g. the speed limit), listing the rest under limitations.")
+                if d in spec.facts:
+                    blocks[-1] += "\n" + spec.facts[d]
             elif d == "weather":
                 blocks.append(f"{head}\nThe planner drew this target environment (seeded random, different from the "
                               "parent). Realise it exactly: replace every differing /environment field with these "
@@ -949,6 +952,10 @@ def _plan(parent: dict, mode: str, requests: dict | None, seed: int, separate: b
                 specs.append(Spec(i, f"{pid}_aug_m{h}_{d[0]}", [d], "manual", {d: req[d]}, seed=seed))
         else:
             specs.append(Spec(0, f"{pid}_aug_m{h}", list(req), "manual", req, seed=seed))
+        if static_objects and "environment" in req:
+            for sp in specs:
+                if "environment" in sp.dims:
+                    sp.facts["environment"] = PL.placement_facts(parent, reach)
     else:
         raise ValueError(f"mode must be 'auto' or 'manual', got {mode!r}")
     return specs
