@@ -59,8 +59,10 @@ class WeatherParams:
 def effective_environment(env: dict | None) -> dict:
     """TSIR ``environment`` (+ appearance overrides) with the numeric fields filled in from the weather label:
     ``precipitation`` (rain 0.35, heavy_rain 0.75, snow 0.5 when it is 0) and ``fog_visibility_m`` (fog 120 m when the
-    visibility is the clear-air default)."""
+    visibility is the clear-air default); a missing ``time_of_day`` / ``road_surface`` gets 12:00 / dry."""
     e = dict(env or {})
+    e.setdefault("time_of_day", "12:00")          # lifted scenarios may leave the environment partly unset
+    e.setdefault("road_surface", "dry")
     w = str(e.get("weather", "clear"))
     prec = float(e.get("precipitation", 0.0) or 0.0)
     vis = float(e.get("fog_visibility_m", 100000.0) or 100000.0)

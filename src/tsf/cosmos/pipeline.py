@@ -137,21 +137,42 @@ def rds_bev_png(clip_root, clip_id: str, frame: int, png, half: float = 70.0, pp
     return png
 
 
-def bev_video(sim, log, t0: float, n: int, fps: int, out, size=(960, 540), hold: int = 3) -> Path:
-    """TanitSim BEV (render2d) of the clip window, one rendered frame per ``hold`` output frames."""
+def bev_video(sim, log, t0: float, n: int, fps: int, out, size=(960, 540), hold: int = 3, env: dict | None = None,
+              ss: int | None = None) -> Path:
+    """TanitSim BEV (render2d) of the clip window, one rendered frame per ``hold`` output frames. ``env`` (``time_of_day``,
+    ``weather``, ``road_surface`` strings) replaces the environment in the HUD chip, e.g. the appearance a sensor render
+    was asked for (the renderer reads nothing else from ``sim.sc.environment``); the simulation is not touched. ``ss``: the
+    renderer's geometry supersampling (module default 2: ~4.4 GB peak RSS for the uc1 map; 1: ~1.2 GB, slightly less smooth
+    edges, same content)."""
     import imageio.v2 as imageio
 
+    from tsf.sim import render2d
     from tsf.sim.render2d import Renderer
-    r = Renderer(sim, log, size)
+    old_ss = render2d.SS
+    if ss:
+        render2d.SS = int(ss)
+    try:
+        r = Renderer(sim, log, size)
+    except BaseException:
+        render2d.SS = old_ss
+        raise
     dt = float(log.t[1] - log.t[0])
     wr = imageio.get_writer(str(out), fps=fps, codec="libx264", macro_block_size=1,
                             output_params=["-crf", "20", "-preset", "fast"])
-    last = None
-    for k in range(n):
-        if k % hold == 0 or last is None:
-            last = r.frame(int(min(len(log.t) - 1, round((t0 + k / fps) / dt))))
-        wr.append_data(last)
-    wr.close()
+    old = sim.sc.environment
+    if env:
+        from types import SimpleNamespace
+        object.__setattr__(sim.sc, "environment", SimpleNamespace(**{k: str(env[k]) for k in ("time_of_day", "weather", "road_surface")}))
+    try:
+        last = None
+        for k in range(n):
+            if k % hold == 0 or last is None:
+                last = r.frame(int(min(len(log.t) - 1, round((t0 + k / fps) / dt))))
+            wr.append_data(last)
+    finally:
+        object.__setattr__(sim.sc, "environment", old)
+        render2d.SS = old_ss
+        wr.close()
     return Path(out)
 
 
@@ -448,33 +469,55 @@ def _geometry_key(txt: str, t0, frames: int, cams, rig: str, resolution: str, li
     return hashlib.sha1(json.dumps([txt, t0, frames, list(cams), rig, resolution, lidar]).encode()).hexdigest()[:16]
 
 
-def geometry_bev(txt: str, gdir, frames: int, *, sim=None, log=None, min_available_gb: float = 35.0, wait_s: float = 900.0) -> Path:
-    """``<gdir>/bev.mp4``: TanitSim bird's-eye view of the clip window (30 fps, ``frames`` frames). The map raster of
-    ``tsf.sim.render2d`` peaks at ~4.6 GB RSS, so this is a scenario-only step that runs next to the other renderers (guarded
-    by ``wait_for_memory``) and never while a Cosmos server holds the memory."""
+def _bev_env(tsir: dict, appearance: dict | None) -> tuple[dict, dict, str]:
+    """``(scenario, rendered, file name)``: the HUD environment triple of the TSIR, the one of the render (TSIR + appearance
+    override) and the BEV file that shows it (``bev.mp4`` when they agree, else ``bev_<hash>.mp4``)."""
+    def triple(e):
+        return {"time_of_day": str(e.get("time_of_day", "12:00")), "weather": str(e.get("weather", "clear")),
+                "road_surface": str(e.get("road_surface", "dry"))}
+    base = triple(tsir.get("environment", {}))
+    eff = triple({**tsir.get("environment", {}), **(appearance or {})})
+    name = "bev.mp4" if eff == base else f"bev_{hashlib.sha1(json.dumps(eff, sort_keys=True).encode()).hexdigest()[:8]}.mp4"
+    return base, eff, name
+
+
+def geometry_bev(txt: str, gdir, frames: int, *, sim=None, log=None, min_available_gb: float = 35.0, wait_s: float = 60.0,
+                 env: dict | None = None, name: str = "bev.mp4") -> Path:
+    """``<gdir>/<name>`` (``bev.mp4``): TanitSim bird's-eye view of the clip window (30 fps, ``frames`` frames); ``env``
+    puts another environment (the rendered appearance) in the HUD chip, see :func:`bev_video`. The map raster of
+    ``tsf.sim.render2d`` peaks at ~4.4-4.6 GB RSS at the default supersampling, more than a process may take next to the
+    resident services unless ``min_available_gb`` (35) is free: then it is rendered at full quality (waiting up to
+    ``wait_s`` s for that memory); otherwise (a Cosmos server is up) at supersampling 1 (~1.2 GB, needs 8 GB free)."""
     from tsf.cosmos import rds_hq
     from tsf.verify import ladder
 
     gdir = Path(gdir)
-    out = gdir / "bev.mp4"
+    out = gdir / name
     if out.exists():
         return out
-    wait_for_memory(min_available_gb, wait_s, what="the TanitSim BEV render (4.6 GB)")
+    try:
+        wait_for_memory(min_available_gb, wait_s, what="the TanitSim BEV render (4.6 GB)")
+        ss = None
+    except CosmosBusyError:
+        wait_for_memory(8.0, min(wait_s, 120.0), what="the low-memory TanitSim BEV render (1.2 GB)")
+        ss = 1
     if sim is None:
         rep = ladder.run(txt, gdir / "sim", qc=False)
         sim, log = rep._sim, rep._log
     cid = json.loads((gdir / "geometry.json").read_text())["clip_id"]
-    return bev_video(sim, log, rds_hq.export_report(gdir / "rds_hq", cid)["t0_s"], frames, 30, out)
+    return bev_video(sim, log, rds_hq.export_report(gdir / "rds_hq", cid)["t0_s"], frames, 30, out, env=env, ss=ss)
 
 
 def prepare_geometry(txt: str, gdir, cams, frames: int, *, t0: float | None = None, lidar: bool = True, rig: str = "hyperion",
                      resolution: str = "resize_1280x720", clip_id: str | None = None, min_available_gb: float = 35.0,
-                     wait_s: float = 900.0) -> tuple[dict, object, object]:
+                     wait_s: float = 900.0, appearance: dict | None = None,
+                     renderer_min_gb: float = 12.0) -> tuple[dict, object, object]:
     """Scenario-only stages of :func:`render_sensors`: TanitSim -> RDS-HQ export (``pad_frames=1``) -> WSM v4 controls ->
     HD-map LiDAR control, all under ``gdir`` (``rds_hq/``, ``wsm/``, ``lidar/``, ``sim/``). Skipped when ``gdir/geometry.json``
     holds the same key (scenario text, window, cameras, rig, resolution, lidar). Returns ``(info, sim, log)`` with
     ``info = {key, timings, clip_id, frames, reused}``; ``sim`` / ``log`` are None when reused. Needs no Cosmos server.
-    Waits up to ``wait_s`` for ``min_available_gb`` free memory before the renderers (WSM, LiDAR range map) start."""
+    Waits up to ``wait_s`` for ``renderer_min_gb`` free memory before the renderers (WSM, LiDAR range map; measured peak RSS
+    1.5-1.8 GB each, below the 4 GB that needs 35 GB free) start; the BEV follows :func:`geometry_bev`."""
     from tsf.cosmos import lidar as L
     from tsf.cosmos import rds_hq, wsm
     from tsf.verify import ladder
@@ -486,9 +529,13 @@ def prepare_geometry(txt: str, gdir, cams, frames: int, *, t0: float | None = No
     key = _geometry_key(txt, t0, frames, cams, rig, resolution, lidar)
     gfile = gdir / "geometry.json"
     geo = json.loads(gfile.read_text()) if gfile.exists() else {}
+    base_env, eff_env, bev_name = _bev_env(tsir, appearance)
     if geo.get("key") == key and (gdir / "wsm").exists():
+        if bev_name != "bev.mp4" and not (gdir / bev_name).exists():            # new appearance: only the HUD chip differs
+            # full quality only if 35 GB is free within a minute; else geometry_bev falls back to the 1.2 GB low-memory render
+            geometry_bev(txt, gdir, frames, env=eff_env, name=bev_name, min_available_gb=min_available_gb, wait_s=min(wait_s, 60.0))
         return {**geo, "reused": True}, None, None
-    wait_for_memory(min_available_gb, wait_s, what="the WSM / LiDAR renderers")
+    wait_for_memory(renderer_min_gb, wait_s, what="the WSM / LiDAR renderers")
     gt: dict = {}
     t = time.perf_counter()
     rep = ladder.run(txt, gdir / "sim", qc=False)
@@ -509,6 +556,8 @@ def prepare_geometry(txt: str, gdir, cams, frames: int, *, t0: float | None = No
     t = time.perf_counter()
     (gdir / "bev.mp4").unlink(missing_ok=True)
     geometry_bev(txt, gdir, frames, sim=sim, log=log)
+    if bev_name != "bev.mp4":
+        geometry_bev(txt, gdir, frames, sim=sim, log=log, env=eff_env, name=bev_name)
     gt["bev_s"] = round(time.perf_counter() - t, 2)
     gfile.write_text(json.dumps(info, indent=1))
     return info, sim, log
@@ -582,7 +631,13 @@ def render_sensors(scenario, out_dir, *, cameras=SENSOR_CAMERAS, frames: int = 9
 
     # ---- geometry (scenario only): TanitSim -> RDS-HQ -> WSM -> LiDAR control, reusable between appearance variants
     gdir = Path(geometry_dir) if geometry_dir else out
-    geo, sim, log = prepare_geometry(txt, gdir, cams, frames, t0=t0, lidar=lidar, rig=rig, resolution=resolution, clip_id=cid)
+    base_env, bev_env, bev_name = _bev_env(tsir, appearance)
+    try:
+        geo, sim, log = prepare_geometry(txt, gdir, cams, frames, t0=t0, lidar=lidar, rig=rig, resolution=resolution, clip_id=cid,
+                                         appearance=appearance)
+    except CosmosBusyError as exc:                      # only the appearance BEV is missing and memory is short: fall back below
+        err["bev"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        geo, sim, log = prepare_geometry(txt, gdir, cams, frames, t0=t0, lidar=lidar, rig=rig, resolution=resolution, clip_id=cid)
     tm.update(geo["timings"], geometry_reused=geo["reused"])
     root = gdir / "rds_hq"
     erep = rds_hq.export_report(root, cid)
@@ -601,7 +656,7 @@ def render_sensors(scenario, out_dir, *, cameras=SENSOR_CAMERAS, frames: int = 9
 
     # ---- Sim-Auto (joint camera + LiDAR when lidar=True)
     cosmos = g.sim_windows(gdir / "wsm", out / "cosmos", cams, frames, res, caps, window_frames=window_frames, seed=seed,
-                           scenario=sid, lidar_control=control if lidar else None, base_url=base_url, timeout=timeout,
+                           scenario=sid, lidar_control=control if lidar else None, base_url=base_url, timeout=timeout, tsir=tsir,
                            before_window=lambda k: wait_for_memory(window_min_available_gb, timeout=600.0,
                                                                   what=f"Sim-Auto window {k} ({window_frames} frames)"))
     tm["cosmos_s"] = cosmos["request_s"]
@@ -620,14 +675,18 @@ def render_sensors(scenario, out_dir, *, cameras=SENSOR_CAMERAS, frames: int = 9
 
     # ---- TanitSim BEV (scenario-only, made with the geometry) + mosaic
     t = time.perf_counter()
-    bev = gdir / "bev.mp4"
+    bev, bev_label = gdir / bev_name, "TanitSim BEV"
     if not bev.exists():
         try:
-            bev = geometry_bev(txt, gdir, frames, sim=sim, log=log, wait_s=0.0)      # old geometry dir: needs 35 GB free
+            bev = geometry_bev(txt, gdir, frames, sim=sim, log=log, wait_s=0.0, env=bev_env, name=bev_name)  # needs 35 GB free
         except Exception as exc:                                                    # e.g. a server holds the memory
             err["bev"] = f"{type(exc).__name__}: {exc}"
-            bev = None
-    extras = [("TanitSim BEV", bev, 1)]
+            bev = gdir / "bev.mp4"
+            if bev.exists() and bev_name != "bev.mp4":                              # scenario BEV, labelled as such
+                bev_label = f"TanitSim BEV (scenario: {base_env['time_of_day']} {base_env['weather']} {base_env['road_surface']})"
+            elif not bev.exists():
+                bev = None
+    extras = [(bev_label, bev, 1)]
     if lid.get("bev_video"):
         extras += [("LiDAR BEV (generated)", lid["bev_video"], 3),
                    ("LiDAR range: control / generated / intensity", lid.get("range_compare"), 3)]

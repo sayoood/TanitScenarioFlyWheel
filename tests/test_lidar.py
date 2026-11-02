@@ -429,3 +429,73 @@ def test_coherent_appearance_adds_matching_road_surface():
     assert P._coherent_appearance({"weather": "snow"})["road_surface"] == "snow"
     assert P._coherent_appearance({"weather": "rain", "road_surface": "dry"})["road_surface"] == "dry"      # explicit wins
     assert P._coherent_appearance({"weather": "fog"}) == {"weather": "fog"}
+
+
+# ============================================================================== run registration / BEV appearance
+def test_bev_env_follows_the_rendered_appearance():
+    from tsf.cosmos import pipeline as P
+    tsir = {"environment": {"time_of_day": "11:30", "weather": "clear", "road_surface": "dry"}}
+    base, eff, name = P._bev_env(tsir, None)
+    assert base == eff == {"time_of_day": "11:30", "weather": "clear", "road_surface": "dry"} and name == "bev.mp4"
+    assert P._bev_env(tsir, {"weather": "clear", "cloud_cover": 0.4})[2] == "bev.mp4"           # no visible change
+    base, eff, name = P._bev_env(tsir, P._coherent_appearance({"weather": "heavy_rain", "time_of_day": "21:30"}))
+    assert eff == {"time_of_day": "21:30", "weather": "heavy_rain", "road_surface": "wet"} and base["weather"] == "clear"
+    assert name.startswith("bev_") and name.endswith(".mp4") and name != "bev.mp4"
+
+
+def test_reused_geometry_makes_appearance_bev_without_a_long_wait(tmp_path, monkeypatch):
+    """A new appearance on finished geometry only needs the BEV; it must not sit for ``wait_s`` (15 min) for 35 GB while a
+    Cosmos server holds the memory - ``geometry_bev`` falls back to its low-memory render after a minute."""
+    from tsf.cosmos import pipeline as P
+    tsir = {"meta": {"id": "c1"}, "environment": {"time_of_day": "11:30", "weather": "clear", "road_surface": "dry"}}
+    txt = json.dumps(tsir)
+    cams = ["camera_front_wide_120fov"]
+    (tmp_path / "wsm").mkdir()
+    (tmp_path / "geometry.json").write_text(json.dumps({"key": P._geometry_key(txt, None, 97, cams, "hyperion", "resize_1280x720", True)}))
+    seen = {}
+    monkeypatch.setattr(P, "geometry_bev", lambda *a, **k: seen.update(k))
+    info, sim, log = P.prepare_geometry(txt, tmp_path, cams, 97, appearance={"weather": "rain", "road_surface": "wet"})
+    assert info["reused"] and sim is None and log is None
+    assert seen["name"].startswith("bev_") and seen["env"]["weather"] == "rain" and seen["wait_s"] <= 60.0
+
+
+def test_register_sensors_in_run_json(tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("render_run_sensors", ROOT / "scripts" / "render_run_sensors.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    rd = tmp_path / "run_x"
+    (rd / "sensors").mkdir(parents=True)
+    (rd / "sensors_negative").mkdir()
+    (rd / "run.json").write_text(json.dumps({"id": "run_x", "uc": "uc3", "status": "ok", "kpis": {"epdms": 0.9},
+                                              "stages": [{"name": "simulate", "status": "ok"}, {"name": "sensors", "status": "skipped",
+                                                                                              "detail": "not requested (options.sensors)"}]}))
+    for d in ("sensors", "sensors_negative"):
+        (rd / d / "mosaic.mp4").write_bytes(b"m")
+        (rd / d / "sensors.json").write_text("{}")
+        (rd / d / "lidar").mkdir()
+        (rd / d / "lidar" / "lidar_bev.mp4").write_bytes(b"b")
+
+    def res(d):
+        return {"cameras": ["a", "b", "c"], "frames": 97, "t0_s": 1.5, "timings": {"cosmos_s": 400.0}, "errors": {},
+                "captions": {"source": "llm"}, "mosaic": str(rd / d / "mosaic.mp4"),
+                "windows": [{"start_frame": 0, "frames": 49, "request_s": 200.0, "mem_used_peak_delta_gb": 9.0, "x": 1}],
+                "lidar": {"enabled": True, "bev_video": str(rd / d / "lidar" / "lidar_bev.mp4"),
+                          "checks_summary": {"summary": {"sweeps": 32, "mean_points_per_sweep": 1.0}, "objects": {"recall_ge10": 1.0},
+                                             "warnings": []}, "weather": {"physics_applied": False}}}
+    rec = mod.register(rd, "sensors", res("sensors"), 430.0)
+    mod.register(rd, "sensors_negative", res("sensors_negative"), 410.0)
+    run = json.loads((rd / "run.json").read_text())
+    st = next(s for s in run["stages"] if s["name"] == "sensors")
+    assert st["status"] == "ok" and st["seconds"] == 430.0 and "3 cameras + LiDAR" in st["detail"]
+    assert run["sensors"]["lidar"]["sweeps"] == 32 and run["sensors_negative"]["dir"] == "sensors_negative"
+    assert run["kpis"]["epdms"] == 0.9 and run["kpis"]["lidar_checks_ok"] is True and run["kpis"]["cosmos_s_per_frame"] == 4.12
+    names = {a["name"] for a in run["artifacts"]}
+    assert {"mosaic.mp4", "lidar_bev.mp4", "sensors.json", "negative_mosaic.mp4", "negative_lidar_bev.mp4"} <= names
+    assert rec["lidar"]["recall_ge10"] == 1.0 and rec["windows"][0]["frames"] == 49
+
+
+def test_effective_environment_fills_missing_fields():
+    e = W.effective_environment({"weather": "rain"})
+    assert e["time_of_day"] == "12:00" and e["road_surface"] == "dry" and e["precipitation"] > 0
+    assert W.effective_environment(None)["weather"] == "clear"

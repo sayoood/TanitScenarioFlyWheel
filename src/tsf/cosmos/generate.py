@@ -131,13 +131,13 @@ def extract_frame(video, png, index: int = -1) -> Path:
     return Path(png)
 
 
-def resolve_captions(captions, cameras, frames: int, scenario: str | None, fps: float = 30.0) -> dict[str, str]:
+def resolve_captions(captions, cameras, frames: int, scenario: str | None, fps: float = 30.0, tsir=None) -> dict[str, str]:
     """Per-camera caption text. ``captions``: dict camera -> text | sidecar path, or a directory of ``<camera>.json``, or
-    None (deterministic template for ``scenario``)."""
+    None (deterministic template for ``scenario``; ``tsir`` adds its static objects / setting sentences)."""
     if captions is None:
         if scenario is None:
             raise ValueError("pass captions=... or scenario=... (template captions)")
-        return template_captions(scenario, cameras, frames=frames, fps=fps)
+        return template_captions(scenario, cameras, frames=frames, fps=fps, tsir=tsir)
     if isinstance(captions, (str, Path)):
         captions = {c: Path(captions) / f"{c}.json" for c in cameras}
     out = {}
@@ -463,7 +463,7 @@ def _split(camera_major: Path, out_dir: Path, cams: list[str], frames: int, fps:
 
 
 def _run(kind: str, wsm_dir, out_dir, cameras, frames, res, captions, *, start, seed, steps, guidance, shift, fps, scenario,
-         first_frames, base_url, timeout, lidar_control=None, lidar_condition=None) -> dict:
+         first_frames, base_url, timeout, lidar_control=None, lidar_condition=None, tsir=None) -> dict:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     cams = [c for c in CAMERA_ORDER if c in (cameras or CAMERA_ORDER)]
@@ -487,7 +487,7 @@ def _run(kind: str, wsm_dir, out_dir, cameras, frames, res, captions, *, start, 
         lid_ctrl = _lidar.trim_control(lidar_control, out_dir / "controls" / "lidar_control.safetensors", n_sweeps,
                                        start=start // 3)
         lid_cond = Path(lidar_condition) if lidar_condition is not None else None
-    caps = resolve_captions(captions, cams, frames, scenario, fps)
+    caps = resolve_captions(captions, cams, frames, scenario, fps, tsir)
     form, uploads = _build_request(kind, ctrl, caps, frames=frames, fps=fps, res=res, seed=seed, steps=steps,
                                    guidance=guidance, shift=shift, first_frames=first_frames, lidar_control=lid_ctrl,
                                    lidar_condition=lid_cond)
@@ -540,7 +540,7 @@ def transfer(wsm_dir, out_dir, cameras=None, frames: int = 297, res: str = "480"
 
 def sim_chunk(wsm_dir, out_dir, cameras=None, frames: int = 49, res: str = "480", captions=None, *, start: int = 0,
               first_frames: dict[str, Path] | None = None, seed: int = 0, fps: float = 30.0, scenario: str | None = None,
-              lidar_control=None, lidar_condition=None, base_url: str = DEFAULT_URL, timeout: float = 7200) -> dict:
+              lidar_control=None, lidar_condition=None, base_url: str = DEFAULT_URL, timeout: float = 7200, tsir=None) -> dict:
     """Sim-Auto rollout of controls ``[start, start+frames)`` (server: ``serve("sim")``; 4 steps, guidance 1, fixed).
 
     ``first_frames``: ``{camera: png/mp4}`` RGB condition for the window's first frame (I2V); None = WSM-only text2video. The
@@ -556,7 +556,7 @@ def sim_chunk(wsm_dir, out_dir, cameras=None, frames: int = 49, res: str = "480"
     """
     r = _run("sim", wsm_dir, out_dir, cameras, frames, res, captions, start=start, seed=seed, steps=4, guidance=1.0, shift=0.0,
              fps=fps, scenario=scenario, first_frames=first_frames, base_url=base_url, timeout=timeout,
-             lidar_control=lidar_control, lidar_condition=lidar_condition)
+             lidar_control=lidar_control, lidar_condition=lidar_condition, tsir=tsir)
     r["last_frames"] = {c: str(extract_frame(p, Path(out_dir) / f"last_{c}.png", -1)) for c, p in r["videos"].items()}
     return r
 
@@ -635,7 +635,7 @@ def _load_window(wdir: Path, key: str, cams: list[str]) -> dict | None:
 def sim_windows(wsm_dir, out_dir, cameras=None, frames: int = 97, res: str = "480", captions=None, *, window_frames: int = WINDOW_FRAMES,
                 start: int = 0, first_frames: dict[str, Path] | None = None, seed: int = 0, fps: float = 30.0,
                 scenario: str | None = None, lidar_control=None, base_url: str = DEFAULT_URL, timeout: float = 7200,
-                before_window=None, resume: bool = True) -> dict:
+                before_window=None, resume: bool = True, tsir=None) -> dict:
     """:func:`sim_chunk` for a clip longer than one request can hold: ``frames`` (4k+1) camera frames from control frame
     ``start`` in windows of at most ``window_frames`` that overlap by one frame; window k+1 is conditioned (I2V) on the last
     generated frame of window k, its captions are the clip's captions cut to its time span, its seed is ``seed + k``. The
@@ -651,14 +651,14 @@ def sim_windows(wsm_dir, out_dir, cameras=None, frames: int = 97, res: str = "48
     out_dir = Path(out_dir)
     if frames <= window_frames:
         return sim_chunk(wsm_dir, out_dir, cameras, frames, res, captions, start=start, first_frames=first_frames, seed=seed,
-                         fps=fps, scenario=scenario, lidar_control=lidar_control, base_url=base_url, timeout=timeout)
+                         fps=fps, scenario=scenario, lidar_control=lidar_control, base_url=base_url, timeout=timeout, tsir=tsir)
     stride = window_frames - 1
     if stride % (12 if lidar_control is not None else 4) or (frames - 1) % 4:
         raise ValueError("windows need window_frames-1 a multiple of 12 (joint) / 4 and frames = 4k+1")
     out_dir.mkdir(parents=True, exist_ok=True)
     cams = [c for c in CAMERA_ORDER if c in (cameras or CAMERA_ORDER)]
     scenario = scenario or Path(wsm_dir).name
-    caps = resolve_captions(captions, cams, frames, scenario, fps)
+    caps = resolve_captions(captions, cams, frames, scenario, fps, tsir)
     runs, ff, s = [], first_frames, start
     while True:
         wf = min(window_frames, start + frames - s)
