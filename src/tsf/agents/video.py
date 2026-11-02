@@ -243,6 +243,38 @@ def pin_ego_assertions(tsir: dict, t: np.ndarray, v: np.ndarray, margin: float =
     return tsir
 
 
+def pin_ego_signal(tsir: dict, t: np.ndarray, v: np.ndarray, v_go: float = 1.0) -> dict:
+    """Set the junction's signal phase from the measured profile: a camera car that waits and then pulls away at
+    t_go gets green for its movement from t_go - 0.5 s, one that never stops gets it from t = 0. The model guessed
+    the phase (dToIIqqvSt0: green 0-11 s, so the ego, pulling away at 9.5 s as measured, met the red and waited
+    until 41 s; the repairer stretched the scenario to 47 s and the speed error grew from 1.2 to 8.5 km/h)."""
+    road = tsir.get("road") or {}
+    ego = next((a for a in tsir.get("actors", []) if a.get("role") == "ego"), None)
+    if (ego is None or road.get("type") != "junction" or not road.get("signalized") or len(t) < 2
+            or ego.get("initial", {}).get("direction", "inbound") != "inbound"):
+        return tsir
+    moving = np.flatnonzero(np.asarray(v) > v_go)
+    if not len(moving):                                    # parked camera: the light does not matter
+        return tsir
+    from tsf.ir.scenario import Scenario
+    from tsf.sim.engine import SignalPlan
+    try:
+        sp = SignalPlan(Scenario.model_validate(tsir))
+    except ValueError:                                     # an invalid proposal: the verifier reports it
+        return tsir
+    arm, turn = ego["initial"].get("road", 0), (ego.get("route") or ["straight"])[0]
+    start = 0.0
+    for arms, turns, g in sp.phases:
+        if arm in arms and turn in turns:
+            break
+        start += g + sp.yellow + sp.red
+    else:
+        return tsir
+    green_at = max(0.0, float(np.asarray(t)[moving[0]]) - 0.5) if moving[0] > 0 else 0.0
+    road.setdefault("signal_plan", {})["initial_phase_offset_s"] = round((start - green_at) % sp.cycle, 2)
+    return tsir
+
+
 def speed_fidelity(rep, ego: dict) -> dict:
     """Simulated vs ViPE ego speed (MAE, km/h) over the common horizon."""
     if not hasattr(rep, "_log"):
@@ -598,6 +630,7 @@ def lift_video(video: str, workdir: Path, llm: LLM | None = None, max_seconds: f
 
     def pin(d: dict) -> dict:
         d = pin_ego_assertions(pin_ego_speed(infer_action_types(move_signs_off_the_road(d)), tv, vv), tv, vv)
+        d = pin_ego_signal(d, tv, vv)
         return pin_npcs(d, npcs)        # also without measurements: nobody starts behind the ego
 
     res: LiftResult = Lifter(llm).lift(query, wd / "lift", sid=_slug("video " + path.stem, 40), on_stage=on_stage,

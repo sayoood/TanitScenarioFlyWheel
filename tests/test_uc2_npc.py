@@ -14,6 +14,7 @@ from tsf.agents.video import (
     npc_fidelity,
     npc_line,
     pin_ego_assertions,
+    pin_ego_signal,
     pin_npcs,
     request_text,
     select_npcs,
@@ -177,6 +178,18 @@ def test_ego_speed_assertions_follow_the_measured_profile():
     assert 0 < ks["ego_reaches_s"]["value"] < 80.0 and ks["max_decel_below"]["value"] > 1.0
     assert "ego_stops_before_line" not in ks
     Scenario.model_validate(out)
+
+
+def test_signal_phase_follows_the_measured_departure():
+    from tsf.sim.engine import SignalPlan
+    d = json.loads((Path(__file__).parents[1] / "examples" / "uc1_left_turn_intersection.json").read_text())
+    ego = next(a for a in d["actors"] if a["role"] == "ego")
+    arm, turn = ego["initial"]["road"], ego["route"][0]
+    t = np.arange(0.0, 20.0, 0.5)
+    sp = SignalPlan(Scenario.model_validate(pin_ego_signal(copy.deepcopy(d), t, np.where(t < 9.5, 0.2, 6.0))))
+    assert sp.state(arm, turn, 8.5) != "green" and sp.state(arm, turn, 9.2) == "green"   # waits, then pulls away
+    sp = SignalPlan(Scenario.model_validate(pin_ego_signal(copy.deepcopy(d), t, np.full_like(t, 12.0))))
+    assert sp.state(arm, turn, 0.0) == "green"                                         # never stops
 
 
 def test_road_without_oncoming_lanes_gets_no_oncoming_or_crossing_users():

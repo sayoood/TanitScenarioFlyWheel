@@ -31,7 +31,9 @@ def _f(v, d=2, unit=""):
         return "--"
     if isinstance(v, bool):
         return r"\checkmark" if v else r"$\times$"
-    if isinstance(v, (int, float)):
+    if isinstance(v, int):
+        return f"{v}{unit}"
+    if isinstance(v, float):
         return f"{v:.{d}f}{unit}"
     return str(v).replace("_", r"\_")
 
@@ -100,13 +102,14 @@ def uc2(runs: list[dict]) -> str:
         st = sorted((Path(r["_dir"]) / "uc2" / "vipe").glob("w*/stats.json"))
         h = [(json.loads(p.read_text()).get("camera_height") or {}).get("median_m") for p in st]
         h = [x for x in h if x]
-        rows.append([r["input"]["video"].split(":")[1], e.get("duration_s"), sum(h) / len(h) if h else None,
+        rows.append([r["input"]["video"].split(":")[1], (r.get("uc2") or {}).get("ego_source") or "vipe",
+                     e.get("duration_s"), sum(h) / len(h) if h else None,
                      e.get("distance_m"), max(e.get("speed_kmh_per_s") or [0]), k.get("uc2_speed_mae_kmh"),
                      k.get("final_valid"), k.get("repairs"), k.get("package_valid"), k.get("epdms")])
     return table("UC2 on three CC-BY dash-cam clips without ego-motion data: ViPE ego track (15 fps, 480p, 20 s "
                  "windows), validity of the lifted scenario and how closely the simulated ego follows the measured "
-                 "speed.", "tab:uc2", "lrrrrrcccr",
-                 ["clip", "s", "cam.~h m", "dist. m", "peak km/h", "speed MAE km/h", "valid", "rep.", "pkg", "EPDMS"],
+                 "speed.", "tab:uc2", "llrrrrrcccr",
+                 ["clip", "ego", "s", "cam.~h m", "dist. m", "peak km/h", "speed MAE km/h", "valid", "rep.", "pkg", "EPDMS"],
                  rows, r"Clips by YouTube user a62dave under the Creative Commons Attribution licence: "
                        r"youtu.be/amuldGGgNc4, youtu.be/dToIIqqvSt0, youtu.be/qdAI\_quNcqw. Video, frames and every "
                        r"derivative stay on the Thor; only these aggregate numbers are published.")
@@ -234,6 +237,8 @@ def free(path: Path, caption: str, label: str) -> str:
 def tone(root: Path) -> str:
     rows = []
     for p in sorted(root.glob("*/t1_summary.json")):
+        if "bug" in p.parent.name:                         # superseded runs kept for the record
+            continue
         s = json.loads(p.read_text())
         sc, tm = s["score"], s.get("timing") or [{}]
         cos = [x["cosmos_s"] for x in tm if "cosmos_s" in x]
@@ -245,6 +250,81 @@ def tone(root: Path) -> str:
     return table("T1 neural closed loop: REFe SFT-4 driving on Cosmos3-Nano-Sim-Auto frames (5 cameras, 480p).",
                  "tab:tone", "lrrrrrrrrrrr", ["scenario", "s", "chunks", "EPDMS", "NC", "DAC", "TLC", "TTC", "EP", "C",
                                               "Cosmos s/chunk", "wall min"], rows)
+
+
+def augment(root: Path) -> str:
+    """Every augmentation demo variant: build (edit, verify, isolation, description, package) and render judges."""
+    rows = []
+    for rp in sorted(root.glob("*/*_aug_*/result.json")):
+        r = json.loads(rp.read_text())
+        pk, jd, tm = r.get("package") or {}, r.get("judge") or {}, r.get("timings") or {}
+        cam = jd.get("camera") or {}
+        rows.append([rp.parent.parent.name,"+".join(d[0].upper() for d in r["dimensions"]),
+                     (r.get("lever") or "--")[:18], r["status"] == "ok", r.get("first_pass_valid"), r.get("repairs"),
+                     (r.get("isolation") or {}).get("ok"), (r.get("description_check") or {}).get("ok"),
+                     bool(pk.get("scenario_structure_valid") and pk.get("imdad_record_valid")) if pk else None,
+                     f"{'ok' if cam.get('ok') else 'fail'} {cam.get('objects_visible_ratio') or ''}".strip() if cam else None,
+                     (jd.get("lidar") or {}).get("ok") if jd else None,
+                     round(tm["build_s"]) if tm.get("build_s") else None,
+                     round(tm["render_s"]) if tm.get("render_s") else None])
+    note = (r"W/B/E: weather, behaviour, environment. Camera: VLM judge on the front camera (weather, time band, "
+            r"share of the added objects it sees); LiDAR: generated sweeps vs.\ the HD-map control. ``--'': not rendered.")
+    return table("Agentic augmentation on the UC1 left turn (automatic and manual mode): every variant built so far.",
+                 "tab:augment", "llllcccccclrr",
+                 ["run", "dim", "lever", "ok", "1st", "rep.", "iso.", "desc.", "pkg", "camera", "LiDAR", "build s",
+                  "render s"], rows, note)
+
+
+def sensors(runs: list[dict]) -> str:
+    """Joint camera + LiDAR generation per use case (latest run with a sensors stage), LiDAR vs. HD-map control."""
+    rows = []
+    for r in sorted(_latest([x for x in runs if x.get("sensors")], ("uc1", "uc2", "uc3", "uc4", "uc5")),
+                    key=lambda x: x["uc"]):
+        for key, tag in (("sensors", ""), ("sensors_negative", " neg.")):
+            s = r.get(key)
+            if not s:
+                continue
+            li, tm = s.get("lidar") or {}, s.get("timings") or {}
+            rows.append([r["uc"].upper() + tag, s.get("frames"), len(s.get("cameras") or []),
+                         round(tm["cosmos_s"]) if tm.get("cosmos_s") else None, li.get("sweeps"),
+                         round(li["mean_points_per_sweep"]) if li.get("mean_points_per_sweep") else None,
+                         li.get("mean_valid_fraction"), li.get("median_abs_range_err_m"),
+                         li.get("control_agree_within_1m"), li.get("recall_ge10"),
+                         "warn" if s.get("lidar_warnings") else "ok"])
+    return table(r"Joint camera + LiDAR generation (Cosmos3-Nano-Sim-Auto, two chained 49-frame windows) per use case: "
+                 r"generated LiDAR vs.\ the HD-map + box control.", "tab:sensors", "lrrrrrrrrrl",
+                 ["UC", "frames", "cams", "Cosmos s", "sweeps", "pts/sweep", "valid", r"med.~$|\Delta r|$ m",
+                  r"$\le$1\,m", "box recall", "check"], rows,
+                 r"Check: warn when the median range difference to the control exceeds 2\,m.")
+
+
+def vipe_pai(d: Path) -> str:
+    """ViPE against PhysicalAI-AV ground truth: estimated vs. calibrated focal length (aggregates only)."""
+    a, b = _j(d / "summary_dense.json"), _j(d / "summary_dense_f.json")
+    if not (a and b):
+        return r"\noindent\todo{ViPE validation pending}"
+
+    def rec(s):
+        n = [tuple(map(int, x.split("/"))) for x in s["track_recall"]]
+        return sum(x for x, _ in n) / sum(y for _, y in n)
+
+    def row(name, f, dd=2):
+        return [name, round(f(a), dd), round(f(b), dd)]
+    rows = [row("focal length px (mean)", lambda s: mean(s["focal_est_px"]), 0),
+            row("ego heading error, mean abs deg", lambda s: s["ego"]["heading_err_mean_abs_deg"]["mean"]),
+            row("ego ATE after Sim(2) alignment m", lambda s: s["ego"]["ate_sim2_rmse_m"]["mean"]),
+            row("ego speed MAE km/h", lambda s: s["ego"]["speed_mae_kmh"]["mean"]),
+            row("trajectory scale (Sim(2))", lambda s: s["ego"]["sim2_scale"]["mean"]),
+            row("road depth AbsRel, 4-10 m", lambda s: s["depth"]["road"]["4-10"]["absrel_median"]),
+            row("road depth AbsRel, 10-20 m", lambda s: s["depth"]["road"]["10-20"]["absrel_median"]),
+            row("road depth AbsRel, 20-30 m", lambda s: s["depth"]["road"]["20-30"]["absrel_median"]),
+            row("NPC track recall", rec),
+            row("NPC frame recall, 4-10 m", lambda s: s["frame_recall"]["4-10"][2]),
+            row("NPC frame recall, 20-30 m", lambda s: s["frame_recall"]["20-30"][2])]
+    return table(r"ViPE (dense depth, NPC tracks) on three PhysicalAI-AV clips against ground-truth egomotion, LiDAR "
+                 r"depth and obstacle labels: focal length estimated vs.\ taken from the calibration.", "tab:vipepai",
+                 "lrr", ["metric", "estimated $f$", "calibrated $f$"], rows,
+                 "PhysicalAI-AV: internal validation; only these aggregates leave the Thor.")
 
 
 def main():
@@ -271,6 +351,9 @@ def main():
         r"\newcommand{\ResultsRefe}{%s}" % free(HOME / "tsf/dev/refe/results.json", "REFe SFT-4 on Thor: latency and "
                                                 "open-loop sanity on a PhysicalAI-AV clip (ADE/FDE in m)", "tab:refe"),
         r"\newcommand{\ResultsTone}{%s}" % tone(Path(a.runs).parent / "t1"),
+        r"\newcommand{\ResultsAugment}{%s}" % augment(Path(a.runs).parent / "augment_demo"),
+        r"\newcommand{\ResultsSensors}{%s}" % sensors(runs),
+        r"\newcommand{\ResultsVipePAI}{%s}" % vipe_pai(HOME / "tsf/dev/vipe/pai"),
     ])
     Path(a.out).write_text(tex)
     print(f"wrote {a.out}: {len(runs)} runs, batches={[v for v, _ in batches]}, h2 gens={len(h2)}")
