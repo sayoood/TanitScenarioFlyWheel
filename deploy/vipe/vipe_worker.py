@@ -1,11 +1,13 @@
 """Container-side ViPE runner: trim/rescale a clip, run the pose-only pipeline, write poses and diagnostics.
 
 Copied to /opt/tsf/vipe_worker.py by the Dockerfile; driven by tsf.ingest.vipe.run_vipe.
-Outputs (under --out): clip.mp4, vipe/pose/clip.npz, vipe/intrinsics/clip.npz, stats.json.
+Outputs (under --out): clip.mp4, vipe/pose/clip.npz, vipe/intrinsics/clip.npz, stats.json and, with --dense,
+dense.npz (per-frame MoGe-2 metric depth in ViPE's pinhole K, ViPE instance maps and their phrases).
 """
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import resource
 import subprocess
@@ -16,11 +18,12 @@ import numpy as np
 import torch
 
 
-def use_moge_fov(n: int = 7) -> None:
+def use_moge_fov(n: int = 7, focal_px: float | None = None) -> None:
     """Initialise the pinhole focal length from MoGe-2's own FOV estimate (median over ``n`` frames spread
     over the clip) instead of GeoCalib's (first 2 s only). MoGe-2's metric depth is conditioned on the FOV,
-    so a FOV consistent with its depth head keeps the metric scale coherent."""
-    import vipe.pipeline.default as default
+    so a FOV consistent with its depth head keeps the metric scale coherent. ``focal_px`` (known intrinsics, in
+    pixels of the processed clip) replaces the estimate."""
+    from vipe.pipeline import default
     from vipe.pipeline.processors import CachedVideoStream, IntrinsicEstimationProcessor
     from vipe.priors.depth import make_depth_model
     from vipe.utils.cameras import CameraType
@@ -28,6 +31,10 @@ def use_moge_fov(n: int = 7) -> None:
     class MogeFovProcessor(IntrinsicEstimationProcessor):
         def __init__(self, video_stream, camera_type=CameraType.PINHOLE, model_cache=None):
             super().__init__(video_stream)
+            if focal_px:
+                self.fov_y = 2 * float(np.arctan(0.5 * video_stream.frame_size()[0] / focal_px))
+                self.camera_type = camera_type
+                return
             moge = model_cache.get("depth/moge2-l", lambda: make_depth_model("moge2-l"))
             frames = CachedVideoStream(video_stream)
             fov = []
@@ -41,6 +48,61 @@ def use_moge_fov(n: int = 7) -> None:
             self.camera_type = camera_type
 
     default.GeoCalibIntrinsicsProcessor = MogeFovProcessor
+
+
+DENSE_PHRASES = ["person", "car", "truck", "bus", "motorcycle", "bicycle"]
+
+
+def capture_instances() -> dict:
+    """Record ViPE's per-frame TrackAnything instance maps (0 = background, uint8 ids) and id -> phrase."""
+    from vipe.pipeline.processors import TrackAnythingProcessor
+
+    store: dict = {"maps": {}, "phrases": {}}
+    orig = TrackAnythingProcessor._process_frame
+
+    def record(self, frame_idx, frame, aot_img_embs=None):
+        frame = orig(self, frame_idx, frame, aot_img_embs=aot_img_embs)
+        store["maps"][int(frame.raw_frame_idx)] = frame.instance.to(torch.uint8).cpu().numpy()
+        store["phrases"].update({int(k): str(v) for k, v in (frame.instance_phrases or {}).items()})
+        return frame
+
+    TrackAnythingProcessor._process_frame = record
+    return store
+
+
+def set_box_threshold(value: float) -> None:
+    """GroundingDINO box threshold of ViPE's instance masking (0.35 by default; lower finds more, smaller objects)."""
+    from vipe.priors.track_anything import TrackAnythingPipeline
+
+    orig = TrackAnythingPipeline.__init__
+
+    def init(self, *args, **kwargs):
+        orig(self, *args, **kwargs)
+        self.threshold_args["box_threshold"] = value
+
+    TrackAnythingPipeline.__init__ = init
+
+
+def dense_depth(pipe, clip: Path, intrinsics: np.ndarray, n: int) -> np.ndarray:
+    """Per-frame MoGe-2 metric depth (n,H,W) float16, conditioned on ViPE's pinhole K (0 = no depth, e.g. sky)."""
+    import cv2
+    from vipe.priors.depth.base import DepthEstimationInput
+
+    model = pipe.model_cache.get("depth/" + pipe.slam_cfg.keyframe_depth, lambda: None)
+    k = torch.tensor([float(x) for x in intrinsics[:4]]).cuda()
+    cap = cv2.VideoCapture(str(clip))
+    out = None
+    for i in range(n):
+        ok, bgr = cap.read()
+        if not ok:
+            raise RuntimeError(f"clip ended at frame {i} of {n}")
+        rgb = torch.as_tensor(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)).float().div(255).cuda()
+        z = model.estimate(DepthEstimationInput(rgb=rgb, intrinsics=k)).metric_depth.float()
+        if out is None:
+            out = np.zeros((n, *z.shape), np.float16)
+        out[i] = z.clamp(0, 1000).cpu().numpy()
+    cap.release()
+    return out
 
 
 def prep_clip(src: Path, dst: Path, start_s: float, max_seconds: float | None, fps: float | None,
@@ -159,6 +221,18 @@ def main() -> None:
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--gpu-mem-gb", type=float, default=24.0)
     ap.add_argument("--no-instance", action="store_true", help="skip object and sky masks")
+    ap.add_argument("--dense", action="store_true",
+                    help="also write dense.npz: per-frame MoGe-2 metric depth and the instance maps")
+    ap.add_argument("--phrases", default=None,
+                    help="comma-separated detector phrases for the instance masks (default: "
+                         + ",".join(DENSE_PHRASES) + ", the same with and without --dense; 'vipe': ViPE's own)")
+    ap.add_argument("--override", action="append", default=[],
+                    help="extra Hydra override of the ViPE config, e.g. pipeline.slam.ba.robust_kernel=huber")
+    ap.add_argument("--kf-gap-s", type=float, default=None,
+                    help="seconds between detector keyframes of the instance masking (ViPE default 2.0)")
+    ap.add_argument("--box-threshold", type=float, default=None, help="GroundingDINO box threshold (default 0.35)")
+    ap.add_argument("--focal-px", type=float, default=None,
+                    help="known focal length in pixels of the processed clip (replaces the MoGe-2 estimate)")
     ap.add_argument("--intrinsics", choices=["geocalib", "moge", "moge_fixed"], default="geocalib",
                     help="focal init: GeoCalib (ViPE default) or MoGe-2; moge_fixed also freezes it in BA")
     a = ap.parse_args()
@@ -180,14 +254,22 @@ def main() -> None:
     from vipe.streams.base import ProcessedVideoStream
     from vipe.streams.raw_mp4_stream import RawMp4Stream
 
+    if a.dense and a.no_instance:
+        ap.error("--dense needs the instance masks")
+    phrases = None if a.phrases == "vipe" else a.phrases.split(",") if a.phrases else DENSE_PHRASES
     vipe_out = a.out / "vipe"
     args = parse_typed_config("default", hydra_args=[
         f"pipeline={a.pipeline}", f"pipeline.output.path={vipe_out}", "pipeline.output.save_artifacts=true",
         "pipeline.output.save_slam_map=true", "pipeline.output.save_viz=false",
         *(["pipeline.init.instance=null"] if a.no_instance else []),
+        *([f"pipeline.init.instance.phrases=[{','.join(phrases)}]"] if phrases and not a.no_instance else []),
+        *([f"pipeline.init.instance.kf_gap_sec={a.kf_gap_s}"] if a.kf_gap_s and not a.no_instance else []),
+        *a.override,
         *(["pipeline.slam.optimize_intrinsics=false"] if a.intrinsics == "moge_fixed" else [])])
+    if a.box_threshold:
+        set_box_threshold(a.box_threshold)
     if a.intrinsics != "geocalib":
-        use_moge_fov()
+        use_moge_fov(focal_px=a.focal_px)
     t0 = time.perf_counter()
     pipe = make_pipeline(args.pipeline)
     load_s = [0.0]
@@ -201,18 +283,35 @@ def main() -> None:
             load_s[0] += time.perf_counter() - t
 
     pipe.model_cache.get = timed_get
+    store = capture_instances() if a.dense else None
     torch.cuda.reset_peak_memory_stats()
     stream = ProcessedVideoStream(RawMp4Stream(clip), []).cache(desc="Reading video stream")
-    n_frames, fps_out = len(stream), float(stream.fps())
+    n_frames, fps_out, (h, w) = len(stream), float(stream.fps()), stream.frame_size()
     t1 = time.perf_counter()
     pipe.run(stream)
     torch.cuda.synchronize()
     t2 = time.perf_counter()
+    del stream
+    gc.collect()
 
     pose = np.load(vipe_out / "pose" / "clip.npz")["data"]
     intr = np.load(vipe_out / "intrinsics" / "clip.npz")["data"]
-    h, w = stream.frame_size()
+    dense = {}
+    if a.dense:
+        td = time.perf_counter()
+        depth = dense_depth(pipe, clip, intr[0], n_frames)
+        miss = [i for i in range(n_frames) if i not in store["maps"]]
+        inst = np.stack([store["maps"].get(i, np.zeros((h, w), np.uint8)) for i in range(n_frames)])
+        np.savez(a.out / "dense.npz", depth=depth, instance=inst, K=np.asarray(intr[0][:4], np.float64),
+                 phrases=json.dumps(store["phrases"]), fps=fps_out, start_s=a.start_s)
+        dense_s = time.perf_counter() - td
+        dense = {"dense_s": dense_s, "dense_fps": n_frames / dense_s,
+                 "instances": len(store["phrases"]), "frames_without_instance_map": len(miss)}
+        del depth, inst
     stats = {
+        "start_s": a.start_s, "phrases": phrases, "focal_fixed_px": a.focal_px, "kf_gap_s": a.kf_gap_s,
+        "override": a.override,
+        "box_threshold": a.box_threshold, **dense,
         "pipeline": a.pipeline, "instance_masks": not a.no_instance,
         "intrinsics_init": a.intrinsics, "frames": int(n_frames), "fps": fps_out,
         "width": int(w), "height": int(h),

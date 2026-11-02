@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -40,7 +41,8 @@ def mem_available_gb() -> float:
 
 def _window(video: Path, out: Path, start_s: float, dur_s: float | None, fps: float | None,
             height: int | None, gpu_mem_gb: float, mem_gb: float, pipeline: str, dynamic_masks: bool,
-            intrinsics: str) -> dict:
+            intrinsics: str, dense: bool = False, focal_px: float | None = None,
+            worker_args: tuple[str, ...] = ()) -> dict:
     """One capped container run on ``video[start_s : start_s + dur_s]``; returns poses, intrinsics, stats."""
     out.mkdir(parents=True, exist_ok=True)
     cmd = ["docker", "run", "--rm", "--runtime", "nvidia", "--gpus", "all", "--ipc", "host",
@@ -55,6 +57,11 @@ def _window(video: Path, out: Path, start_s: float, dur_s: float | None, fps: fl
             cmd += [flag, str(val)]
     if not dynamic_masks:
         cmd.append("--no-instance")
+    if dense:
+        cmd.append("--dense")
+    if focal_px:
+        cmd += ["--focal-px", str(focal_px)]
+    cmd += list(worker_args)
     t0 = time.perf_counter()
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     runtime = time.perf_counter() - t0
@@ -67,7 +74,7 @@ def _window(video: Path, out: Path, start_s: float, dur_s: float | None, fps: fl
     poses = np.load(out / "vipe" / "pose" / "clip.npz")["data"].astype(np.float64)
     fx, fy, cx, cy = np.load(out / "vipe" / "intrinsics" / "clip.npz")["data"][0][:4].astype(float)
     return {"poses": poses, "runtime_s": runtime, "stats": stats, "start_s": start_s,
-            "clip": out / "clip.mp4",
+            "clip": out / "clip.mp4", "dense": out / "dense.npz" if dense else None,
             "intrinsics": {"fx": fx, "fy": fy, "cx": cx, "cy": cy, "width": stats["width"],
                            "height": stats["height"], "model": "pinhole"}}
 
@@ -76,7 +83,9 @@ def run_vipe(video: str | Path, out_dir: str | Path, max_seconds: float | None =
              fps: float | None = None, *, start_s: float = 0.0, height: int | None = 480,
              gpu_mem_gb: float = 16.0, mem_gb: float = 26.0, window_s: float = 20.0, overlap_s: float = 2.0,
              min_avail_gb: float = 30.0, wait_s: float = 900.0, pipeline: str = "pose_only",
-             dynamic_masks: bool = True, intrinsics: str = "moge_fixed") -> dict:
+             dynamic_masks: bool = True, intrinsics: str = "moge_fixed", dense: bool = False,
+             gate: Callable[[], None] | None = None, retries: int = 1, focal_px: float | None = None,
+             worker_args: tuple[str, ...] = ()) -> dict:
     """Run ViPE on ``video[start_s : start_s + max_seconds]`` (resampled to ``fps``, capped at ``height`` px).
 
     ViPE holds a whole clip in host RAM (~10 MB/frame at 480p), so the span is processed in windows of
@@ -87,6 +96,14 @@ def run_vipe(video: str | Path, out_dir: str | Path, max_seconds: float | None =
     ``intrinsics`` picks the focal init: "moge_fixed" (MoGe-2 FOV, median over the window, not optimised in
     the bundle adjustment; default), "moge" (same but optimised) or "geocalib" (ViPE default, which drifted to
     an implausible focal / 10 m camera height on near-static dashcam clips).
+    ``gate`` is called before every window launch (e.g. to wait for a quiet GPU) and may block or raise. A window
+    whose container was killed (exit 137, e.g. by the host memory guard when Cosmos starts) is rerun up to
+    ``retries`` times after the gate.
+    ``focal_px``: known focal length in pixels of the processed clip (``height`` px high); replaces the MoGe-2 FOV
+    estimate (use with ``intrinsics="moge_fixed"``). ``worker_args``: extra worker flags (``--kf-gap-s``,
+    ``--box-threshold``). ``dense`` also keeps per-frame MoGe-2 metric depth and ViPE's instance maps
+    (``w*/dense.npz``) for ``npc_tracks``; it adds ~0.5 GB per 20 s window on disk. The instance masks (also without
+    ``dense``) detect person / car / truck / bus / motorcycle / bicycle, so ego-only and dense runs share them.
     Returns ``poses`` (N,4,4) camera-to-world, ``t`` (N,) video time in s, ``intrinsics`` (first window; fx,
     fy, cx, cy, width, height in clip pixels, pinhole), ``fps``, ``runtime_s`` (wall time incl. trimming,
     model loading, memory waits), ``frames``, ``camera_height`` (m, median over windows), ``windows`` (per
@@ -98,14 +115,24 @@ def run_vipe(video: str | Path, out_dir: str | Path, max_seconds: float | None =
     t_start, t_end = time.perf_counter(), start_s + max_seconds if max_seconds else float("inf")
     wins, poses, t, s = [], np.zeros((0, 4, 4)), np.zeros(0), start_s
     while True:
+        if gate:
+            gate()
         deadline = time.perf_counter() + wait_s
         while mem_available_gb() < min_avail_gb:
             if time.perf_counter() > deadline:
                 raise RuntimeError(f"host MemAvailable {mem_available_gb():.0f} GB < {min_avail_gb:g} GB")
             time.sleep(30)
         dur = min(window_s, t_end - s)
-        w = _window(video, out_dir / f"w{len(wins):02d}", s, dur if dur < float("inf") else None, fps, height,
-                    gpu_mem_gb, mem_gb, pipeline, dynamic_masks, intrinsics)
+        for attempt in range(retries + 1):
+            try:
+                w = _window(video, out_dir / f"w{len(wins):02d}", s, dur if dur < float("inf") else None, fps, height,
+                            gpu_mem_gb, mem_gb, pipeline, dynamic_masks, intrinsics, dense, focal_px, worker_args)
+                break
+            except RuntimeError as e:
+                if attempt == retries or "ViPE failed (137)" not in str(e):
+                    raise
+                if gate:
+                    gate()
         wins.append(w)
         wt = s + np.arange(len(w["poses"])) / w["stats"]["fps"]
         if len(poses):             # chain: previous world pose at the overlap start = this window's frame 0
@@ -114,7 +141,10 @@ def run_vipe(video: str | Path, out_dir: str | Path, max_seconds: float | None =
             new = wt > t[-1] + 0.5 / w["stats"]["fps"]
             poses, t = np.concatenate([poses, w_poses[new]]), np.concatenate([t, wt[new]])
         else:
+            w_poses = w["poses"]
             poses, t = w["poses"], wt
+        w["chained"] = {"poses": w_poses, "t": wt}
+        np.savez(out_dir / f"w{len(wins) - 1:02d}" / "chained.npz", **w["chained"])
         if len(w["poses"]) / w["stats"]["fps"] < dur - 0.5 or s + dur >= t_end - 1e-6:
             break                  # end of video or requested span covered
         s += window_s - overlap_s
@@ -122,10 +152,31 @@ def run_vipe(video: str | Path, out_dir: str | Path, max_seconds: float | None =
     res = {"poses": poses, "t": t, "fps": wins[0]["stats"]["fps"], "runtime_s": time.perf_counter() - t_start,
            "frames": len(poses), "intrinsics": wins[0]["intrinsics"],
            "camera_height": float(np.median(heights)) if heights else None,
-           "windows": [{"start_s": x["start_s"], "clip": x["clip"], "runtime_s": x["runtime_s"],
-                        "stats": x["stats"]} for x in wins]}
+           "windows": [{"start_s": x["start_s"], "clip": x["clip"], "dense": x["dense"], "poses": x["chained"]["poses"],
+                        "t": x["chained"]["t"], "runtime_s": x["runtime_s"], "stats": x["stats"]} for x in wins]}
     np.savez(out_dir / "track.npz", poses=poses, t=t)
     return res
+
+
+def load_run(out_dir: str | Path) -> dict:
+    """Result of an earlier ``run_vipe(out_dir, ...)`` read back from disk (same keys; ``runtime_s`` is the sum of the
+    windows' wall times)."""
+    out_dir = Path(out_dir)
+    z = np.load(out_dir / "track.npz")
+    wins = []
+    for d in sorted(out_dir.glob("w[0-9][0-9]")):
+        c = np.load(d / "chained.npz")
+        st = json.loads((d / "stats.json").read_text())
+        wins.append({"start_s": st.get("start_s", 0.0), "clip": d / "clip.mp4", "poses": c["poses"], "t": c["t"],
+                     "dense": d / "dense.npz" if (d / "dense.npz").exists() else None, "stats": st,
+                     "runtime_s": st["prep_s"] + st["read_s"] + st["pipeline_s"] + st.get("dense_s", 0.0)})
+    st0 = wins[0]["stats"]
+    h = [w["stats"]["camera_height"]["median_m"] for w in wins if w["stats"]["camera_height"].get("n")]
+    fx, fy, cx, cy = st0["intrinsics"]
+    return {"poses": z["poses"], "t": z["t"], "fps": st0["fps"], "runtime_s": sum(w["runtime_s"] for w in wins),
+            "frames": len(z["t"]), "camera_height": float(np.median(h)) if h else None, "windows": wins,
+            "intrinsics": {"fx": fx, "fy": fy, "cx": cx, "cy": cy, "width": st0["width"], "height": st0["height"],
+                           "model": "pinhole"}}
 
 
 def metric_scale(height_est: float | None, height: float = CAM_HEIGHT_M, limit: float = 2.0) -> float:
@@ -215,3 +266,11 @@ def despike(track: np.ndarray, t: np.ndarray, a_max: float = 6.0, kappa_max: flo
     integ = (vm * dt)[:, None] * np.stack([np.cos(hm), np.sin(hm)], 1)
     xy = np.vstack([[x[0], y[0]], [x[0], y[0]] + np.cumsum(np.where(glitch[:, None], integ, rot), axis=0)])
     return np.column_stack([xy, yg, vf])
+
+
+def npc_tracks(run, ego: np.ndarray, t: np.ndarray | None = None, **kw) -> list[dict]:
+    """Tracks of other road users from a ``run_vipe(dense=True)`` result or directory and the (despiked) ``ego_track``:
+    category, planar x / y, speed, heading, lateral offset / gap / lane relative to the ego path, confidence,
+    manoeuvres. See ``tsf.ingest.npc.npc_tracks``."""
+    from tsf.ingest.npc import npc_tracks as impl
+    return impl(run, ego, t, **kw)

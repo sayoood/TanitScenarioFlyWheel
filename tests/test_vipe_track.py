@@ -96,3 +96,22 @@ def test_despike_removes_glitch_and_keeps_clean_turn():
     out = despike(clean, t)
     assert out[:, 2] == pytest.approx(th, abs=math.radians(0.5))
     assert out[:, :2] == pytest.approx(clean[:, :2], abs=0.3)
+
+
+def test_run_vipe_chains_overlapping_windows(monkeypatch, tmp_path):
+    from tsf.ingest import vipe
+
+    def fake_window(video, out, s, dur, fps, *args):
+        n = round(dur * fps)
+        poses = np.tile(np.eye(4), (n, 1, 1))
+        poses[:, 2, 3] = np.arange(n) / fps * 5.0                       # 5 m/s along the optical axis, own origin
+        out.mkdir(parents=True, exist_ok=True)
+        return {"poses": poses, "stats": {"fps": fps, "camera_height": {}}, "intrinsics": {}, "start_s": s,
+                "clip": out / "clip.mp4", "dense": None, "runtime_s": 1.0}
+
+    monkeypatch.setattr(vipe, "_window", fake_window)
+    monkeypatch.setattr(vipe, "mem_available_gb", lambda: 100.0)
+    res = vipe.run_vipe(tmp_path / "v.mp4", tmp_path / "out", max_seconds=30.0, fps=15, window_s=20, overlap_s=2)
+    assert len(res["windows"]) == 2 and res["frames"] == len(res["t"]) == 450
+    assert np.allclose(np.diff(res["t"]), 1 / 15)
+    assert res["poses"][-1, 2, 3] == pytest.approx(5.0 * 29.93, abs=0.2)            # one continuous 5 m/s path

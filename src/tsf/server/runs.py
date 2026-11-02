@@ -507,11 +507,13 @@ def uc5(ctx: Ctx):
 def uc2(ctx: Ctx):
     """Dash-cam video -> ViPE ego motion + VLM scene description -> Lifter -> UC1 downstream."""
     from tsf.agents.video import lift_video
-    out = lift_video(ctx.run["input"]["video"], ctx.dir / "uc2", on_stage=ctx.stage)
+    opt = ctx.run["options"] or {}
+    out = lift_video(ctx.run["input"]["video"], ctx.dir / "uc2", on_stage=ctx.stage,
+                     ego_speed=opt.get("ego_speed", "auto"), vipe_dir=opt.get("vipe_dir"))
     tsir, rep = _adopt_lift(ctx, out["result"], ctx.dir / "uc2" / "lift")
     ctx.run["kpis"].update(**{f"uc2_{k}": v for k, v in out["fidelity"].items()}, **out["timing"])
     ctx.run["uc2"] = {"ego": out["ego"], "scene": out["scene"], "query": out["query"], "npc": out.get("npc", []),
-                      "npc_drops": out.get("npc_drops", {})}
+                      "npc_drops": out.get("npc_drops", {}), "ego_source": out["timing"].get("ego_source")}
     downstream(ctx, tsir, rep)
 
 
