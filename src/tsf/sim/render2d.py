@@ -809,6 +809,22 @@ def _render_frame(i: int) -> np.ndarray:
     return _WORKER.frame(i)
 
 
+def _default_workers(per_worker_gb: float = 1.5, reserve_gb: float = 20.0) -> int:
+    """CPU-bound pool size capped by available memory: each worker re-builds the map raster (~1.3 GB RSS), and on
+    the Thor the pool shares unified memory with resident LLM / Cosmos servers (6 workers took ~7 GB and got a
+    Cosmos server OOM-guarded twice). TSF_RENDER_WORKERS overrides."""
+    if os.environ.get("TSF_RENDER_WORKERS"):
+        return max(1, int(os.environ["TSF_RENDER_WORKERS"]))
+    n = min(12, max(1, (os.cpu_count() or 2) - 2))
+    try:
+        with open("/proc/meminfo") as f:
+            avail = next(int(ln.split()[1]) for ln in f if ln.startswith("MemAvailable")) / 2 ** 20
+        n = min(n, max(1, int((avail - reserve_gb) / per_worker_gb)))
+    except (OSError, StopIteration, ValueError):
+        pass
+    return n
+
+
 def render_video(sim: TanitSim, log: SimLog, out: str | Path, fps: int = 20, title: str = "",
                  size=(1280, 720), follow: bool = True, workers: int | None = None) -> Path:
     """Frames are rendered by a process pool (each worker builds its own static map layer) and streamed
@@ -819,7 +835,7 @@ def render_video(sim: TanitSim, log: SimLog, out: str | Path, fps: int = 20, tit
     dt = log.t[1] - log.t[0] if len(log.t) > 1 else 0.05
     stride = max(1, int(round(1.0 / (fps * dt))))
     idx = list(range(0, len(log.t), stride))
-    workers = workers if workers is not None else min(12, max(1, (os.cpu_count() or 2) - 2))
+    workers = workers if workers is not None else _default_workers()
     blob = None
     if workers > 1 and len(idx) >= 6 * workers:
         try:
