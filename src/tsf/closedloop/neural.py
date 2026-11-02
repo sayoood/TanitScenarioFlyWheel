@@ -62,14 +62,27 @@ class Recorder:
 
 class CosmosSensors:
     def __init__(self, tsir: dict, out: Path, cams: list[str], res: str = "480", captions: dict | None = None,
-                 dry: bool = False):
+                 dry: bool = False, resume: bool = False):
         from tsf.cosmos.llm_captions import llm_captions
-        self.tsir, self.out, self.cams, self.res, self.dry = tsir, out, cams, res, dry
+        self.tsir, self.out, self.cams, self.res, self.dry, self.resume = tsir, out, cams, res, dry, resume
+        cap_file = out / "captions.json"
+        if not captions and resume and cap_file.exists():   # the generated chunks were conditioned on these
+            captions = json.loads(cap_file.read_text())
         self.caps = captions or ({} if dry else llm_captions(tsir, cams, frames=CHUNK, fps=FPS))
         (out / "gen").mkdir(parents=True, exist_ok=True)
-        (out / "captions.json").write_text(json.dumps(self.caps, indent=1))
+        cap_file.write_text(json.dumps(self.caps, indent=1))
         self.last: dict[str, str] | None = None
         self.k, self.timing = 0, []
+
+    def _cached(self, cid: str) -> dict | None:
+        """A chunk an interrupted run already generated (``--resume``): its result plus the last frames."""
+        d = self.out / "gen" / cid
+        last = {c: d / f"last_{c}.png" for c in self.cams}
+        if not (self.resume and (d / "result.json").exists() and all(p.exists() for p in last.values())):
+            return None
+        r = json.loads((d / "result.json").read_text())
+        r["last_frames"] = {c: str(p) for c, p in last.items()}
+        return r
 
     def render(self, sim: TanitSim, log: SimLog) -> dict[str, np.ndarray]:
         from tsf.cosmos import generate, rds_hq, wsm
@@ -77,19 +90,24 @@ class CosmosSensors:
         cid = f"t1_{k:03d}"
         t0 = t_end - (CHUNK - 1) / FPS
         tic = time.perf_counter()
-        root = rds_hq.export_clip(sim, log, self.out / "rds", cid, t0=t0, duration=CHUNK / FPS, cameras=self.cams,
-                                  overwrite=True)
-        t_exp = time.perf_counter() - tic
-        ctrl = wsm.render_wsm(root, cid, self.out / "wsm" / cid, self.cams)
-        t_wsm = time.perf_counter() - tic - t_exp
-        if self.dry:                                 # plumbing test: the policy sees the WSM controls themselves
-            self.k += 1
-            self.timing.append({"chunk": k, "t_world": round(t_end, 3), "export_s": round(t_exp, 1),
-                                "wsm_s": round(t_wsm, 1)})
-            return {c: cv2.cvtColor(cv2.imread(str(generate.extract_frame(p, self.out / "gen" / f"{cid}_{c}.png", -1))),
-                                    cv2.COLOR_BGR2RGB) for c, p in ctrl.items()}
-        r = generate.sim_chunk(self.out / "wsm" / cid, self.out / "gen" / cid, self.cams, frames=CHUNK, res=self.res,
-                               captions=self.caps, first_frames=self.last, seed=k, scenario=self.tsir["meta"]["id"])
+        t_exp = t_wsm = 0.0
+        r = None if self.dry else self._cached(cid)
+        if r is None:
+            root = rds_hq.export_clip(sim, log, self.out / "rds", cid, t0=t0, duration=CHUNK / FPS,
+                                      cameras=self.cams, overwrite=True)
+            t_exp = time.perf_counter() - tic
+            ctrl = wsm.render_wsm(root, cid, self.out / "wsm" / cid, self.cams)
+            t_wsm = time.perf_counter() - tic - t_exp
+            if self.dry:                             # plumbing test: the policy sees the WSM controls themselves
+                self.k += 1
+                self.timing.append({"chunk": k, "t_world": round(t_end, 3), "export_s": round(t_exp, 1),
+                                    "wsm_s": round(t_wsm, 1)})
+                return {c: cv2.cvtColor(cv2.imread(str(generate.extract_frame(p, self.out / "gen" / f"{cid}_{c}.png",
+                                                                              -1))), cv2.COLOR_BGR2RGB)
+                        for c, p in ctrl.items()}
+            r = generate.sim_chunk(self.out / "wsm" / cid, self.out / "gen" / cid, self.cams, frames=CHUNK,
+                                   res=self.res, captions=self.caps, first_frames=self.last, seed=k,
+                                   scenario=self.tsir["meta"]["id"])
         self.last = r["last_frames"]
         self.k += 1
         self.timing.append({"chunk": k, "t_world": round(t_end, 3), "export_s": round(t_exp, 1),
@@ -100,7 +118,7 @@ class CosmosSensors:
 
 
 def run_t1(tsir: dict, policy, out: str | Path, seconds: float | None = None, cams: list[str] = REFE_CAMS,
-           res: str = "480", dry: bool = False) -> ClosedLoopResult:
+           res: str = "480", dry: bool = False, resume: bool = False) -> ClosedLoopResult:
     from tsf.compile import xodr
     from tsf.sim import odr
     out = Path(out)
@@ -111,7 +129,7 @@ def run_t1(tsir: dict, policy, out: str | Path, seconds: float | None = None, ca
     xodr_path = out / f"{sc.meta.id}.xodr"
     xodr.write(sc, xodr_path)
     sim = TanitSim(sc, odr.load(xodr_path), ego_policy=policy)
-    sensors = CosmosSensors(tsir, out, cams, res, dry=dry)
+    sensors = CosmosSensors(tsir, out, cams, res, dry=dry, resume=resume)
     rec = Recorder(sim)
     n = int(round(sc.duration / sim.dt)) + 1
     chunk_s = (CHUNK - 1) / FPS
@@ -147,11 +165,12 @@ def main():
     ap.add_argument("--res", default="480")
     ap.add_argument("--cams", default=",".join(REFE_CAMS))
     ap.add_argument("--dry", action="store_true", help="no Cosmos: feed the WSM controls (plumbing test)")
+    ap.add_argument("--resume", action="store_true", help="reuse the chunks an interrupted run left in --out")
     a = ap.parse_args()
     tsir = json.loads(Path(a.scenario).read_text())
     out = Path(a.out)
     pol = RefePolicy(fallback="const_vel")
-    r = run_t1(tsir, pol, out, a.seconds, a.cams.split(","), a.res, dry=a.dry)
+    r = run_t1(tsir, pol, out, a.seconds, a.cams.split(","), a.res, dry=a.dry, resume=a.resume)
     from tsf.sim.render2d import render_video
     render_video(r.sim, r.log, out / "t1_bev.mp4", title=f"T1 closed loop: REFe SFT-4 on Cosmos3-Nano-Sim-Auto, "
                                                            f"EPDMS {r.score['EPDMS']:.2f}")

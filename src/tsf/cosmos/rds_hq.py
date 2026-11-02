@@ -162,12 +162,14 @@ def _cuboid(center, yaw: float, size) -> np.ndarray:
     return loc @ _rz(yaw)[:3, :3].T + np.asarray(center, float)
 
 
-def _v(a) -> list:
-    return np.round(np.asarray(a, float), 4).tolist()
+def _v(a, nd: int = 4) -> list:
+    return np.round(np.asarray(a, float), nd).tolist()
 
 
 def _lbl(kind: str, verts, attrs: list | None = None) -> dict:
-    return {"labelData": {"shape3d": {"attributes": attrs or [], kind: {"vertices": _v(verts)}}}}
+    # cuboids keep 1 µm: at 0.1 mm a 10 cm-thick sign fails the writer's 1e-3 perpendicularity check at some yaws
+    nd = 6 if kind == "cuboid3d" else 4
+    return {"labelData": {"shape3d": {"attributes": attrs or [], kind: {"vertices": _v(verts, nd)}}}}
 
 
 def _text(name, val):
