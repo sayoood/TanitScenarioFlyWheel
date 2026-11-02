@@ -165,7 +165,30 @@ def _twin_feedback(rep) -> str:
             f"{best[2]:.1f} m/s, lateral offset {best[3]:+.1f} m. If it is stationary, the ego must stop behind it: "
             "plan an earlier, gentler stop (a < 2 m/s2) instead of re-accelerating towards it. "
             if best else f"at the braking peak (t={t[k]:.1f} s) nothing is in the ego's path. ")
-    return f"Twin ego speed per second (m/s): {np.round(v, 1).tolist()}; {lead}\n"
+    return f"Twin ego speed per second (m/s): {np.round(v, 1).tolist()}; {lead}{_ttc_feedback(rep)}\n"
+
+
+def _ttc_feedback(rep) -> str:
+    """The min-TTC actor at closest approach. An oncoming car that overlaps the ego corridor cannot be resolved by
+    braking (its own speed is in the closing speed); only lateral clearance helps (pai 309848ff, 4 speed-only plans)."""
+    log, m = rep._log, rep.metrics
+    aid = m.get("min_ttc_actor")
+    if m.get("min_ttc") is None or m["min_ttc"] >= 2.0 or aid not in log.ids:
+        return ""
+    e, j, S, t = log.roles.index("ego"), log.ids.index(aid), log.states, log.t
+    c = int(np.argmin(np.hypot(S[:, j, 0] - S[:, e, 0], S[:, j, 1] - S[:, e, 1])))
+    ex, ey, eyaw = S[c, e, :3]
+    dx, dy = S[c, j, 0] - ex, S[c, j, 1] - ey
+    lat = -dx * np.sin(eyaw) + dy * np.cos(eyaw)
+    clear = abs(lat) - (log.lwh[e, 1] + log.lwh[j, 1]) / 2
+    txt = (f" The min TTC ({m['min_ttc']} s) is with {aid}; at closest approach (t={t[c]:.1f} s) it is "
+           f"{'left' if lat > 0 else 'right'} of the ego with {clear:+.2f} m lateral clearance between the bodies.")
+    if np.cos(S[c, j, 2] - eyaw) < -0.5:
+        side = -1 if lat > 0 else 1
+        txt += (f" {aid} is ONCOMING: slowing down cannot fix this, its own speed is in the closing speed. Add a "
+                f"lane_offset away from it (offset {side * 0.8:+.1f} to {side * 1.2:+.1f} m, + = left), started at "
+                f"least 3 s before t={t[c]:.1f} s, as the logged driver did, and keep the gentle speed reduction.")
+    return txt
 
 
 def twin(lifted: dict, llm: LLM, workdir: Path, max_repairs: int = 3) -> LiftResult:
