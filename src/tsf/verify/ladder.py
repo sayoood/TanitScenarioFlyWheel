@@ -203,21 +203,49 @@ def l2_static_objects(sc: Scenario, m) -> list[Finding]:
 
 
 # ----------------------------------------------------------------------------- L3
-def _static_blocker(log, e: int, i: int) -> str:
-    """Repair hint naming the standing object the ego brakes for at step i (nearest body ahead whose footprint overlaps
-    the ego's path, as in TanitSim's leader search), else ''. Without it the repairer moved the agents instead."""
-    x, y, yaw = (float(c) for c in log.states[i, e, :3])
+def _ahead(log, k: int, i: int):
+    """(distance, StaticBody | agent index) of the nearest standing object or road user ahead of agent k at step i
+    whose footprint overlaps k's path (as in TanitSim's leader search), else None."""
+    x, y, yaw = (float(c) for c in log.states[i, k, :3])
     c, s = math.cos(yaw), math.sin(yaw)
     best = None
     for b in getattr(log, "static", ()):
         lon, lat = c * (b.x - x) + s * (b.y - y), -s * (b.x - x) + c * (b.y - y)
-        if 0 < lon < 60 and abs(lat) <= log.lwh[e, 1] / 2 + b.extent(yaw)[1] + 0.25 and (best is None or lon < best[0]):
+        if 0 < lon < 60 and abs(lat) <= log.lwh[k, 1] / 2 + b.extent(yaw)[1] + 0.25 and (best is None or lon < best[0]):
             best = (lon, b)
+    for j in range(log.states.shape[1]):
+        if j == k:
+            continue
+        xj, yj, hj = (float(q) for q in log.states[i, j, :3])
+        lon, lat = c * (xj - x) + s * (yj - y), -s * (xj - x) + c * (yj - y)
+        d = hj - yaw
+        half_w = (abs(math.sin(d)) * log.lwh[j, 0] + abs(math.cos(d)) * log.lwh[j, 1]) / 2
+        if 0 < lon < 60 and abs(lat) <= log.lwh[k, 1] / 2 + half_w + 0.25 and (best is None or lon < best[0]):
+            best = (lon, j)
+    return best
+
+
+def _blocker(log, e: int, i: int, sc: Scenario | None = None) -> str:
+    """Repair hint naming what the ego slows for at step i, else ''. A road user standing ahead is followed one step
+    to what stops it. Without the hint the repairer moved the agents around a misplaced cone, and left alone a
+    minivan whose lane change held a speed-pinned UC2 ego back."""
+    best = _ahead(log, e, i)
     if best is None:
         return ""
     lon, b = best
-    return (f". The ego brakes for the standing {b.kind} '{b.id}' {lon:.0f} m ahead, {b.t:+.1f} m from the centre of its "
-            "lane: an object inside a driven lane blocks it. Move such objects beyond the lane edge (outermost lane, "
+    if isinstance(b, int) and float(log.states[i, b, 3]) < 0.5:          # queued behind a stopped car: why it stopped
+        nxt = _ahead(log, b, i)
+        if nxt is not None and not isinstance(nxt[1], int):
+            lon, b = lon + nxt[0], nxt[1]
+    if isinstance(b, int):
+        aid, vj = log.ids[b], float(log.states[i, b, 3])
+        moves = [f"{x.type} at t={x.start.t:.1f}s" for x in (sc.actions if sc else [])
+                 if x.actor == aid and x.type in ("lane_change", "cut_in") and getattr(x.start, "t", None) is not None]
+        return (f". At t={float(log.t[i]):.1f}s the ego is held behind '{aid}' {lon:.0f} m ahead at {vj:.1f} m/s"
+                + (f" (its {', '.join(moves)} puts it into the ego's lane)" if moves else "") +
+                f": give '{aid}' more headway or speed, or move or drop that manoeuvre, rather than changing the ego")
+    return (f". The ego brakes for the standing {b.kind} '{b.id}' {lon:.0f} m ahead (or for the traffic it stops), "
+            f"{b.t:+.1f} m from the centre of its lane: an object inside a driven lane blocks it. Move such objects beyond the lane edge (outermost lane, "
             "t_offset <= -2.4 on the right) or into a lane no agent drives; do not move the agents")
 
 
@@ -253,10 +281,12 @@ def l3_assertions(sc: Scenario, log) -> list[Finding]:
             msg = "" if ok else (f"ego peak decel {mt['ego_max_decel']} m/s2 > {a.value} at t={ti:.1f}s. Give the ego "
                                  "more distance/time before the braking event, or relax the threshold (normal urban "
                                  "braking is 2.5-4 m/s2) unless the request demands gentle braking"
-                                 + _static_blocker(log, e, int(np.argmin(log.states[:, e, 4]))))
+                                 + _blocker(log, e, int(np.argmin(log.states[:, e, 4])), sc))
         elif k == "ego_speed_between":
             ok = bool((v >= (a.value or 0) - 0.3).all() and (v <= (a.value2 or 1e9) + 0.3).all())
             msg = "" if ok else f"ego speed range [{v.min():.1f}, {v.max():.1f}] m/s outside [{a.value}, {a.value2}]"
+            if not ok and v.min() < (a.value or 0) - 0.3:
+                msg += _blocker(log, e, int(np.argmin(v)), sc)
             if not ok and not (a.value or 0) <= v0 <= (a.value2 or 1e9):
                 msg += (f". The assertion contradicts the scenario itself: ego initial_speed {v0} m/s is outside the "
                         "range; widen the range or change initial_speed/speed actions")
