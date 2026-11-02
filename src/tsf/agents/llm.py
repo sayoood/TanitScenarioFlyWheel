@@ -10,10 +10,11 @@ import os
 import time
 from dataclasses import dataclass, field
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, OpenAI
 
 BASE_URL = os.environ.get("TSF_LLM_URL", "http://127.0.0.1:8000/v1")
 MODEL = os.environ.get("TSF_LLM_MODEL", "qwen3.8-27b")
+RESTART_WAIT_S = float(os.environ.get("TSF_LLM_RESTART_WAIT_S", "900"))
 
 
 @dataclass
@@ -49,8 +50,8 @@ class LLM:
         for attempt in range(retries + 1):
             t0 = time.perf_counter()
             try:
-                r = self.client.chat.completions.create(model=self.model, messages=messages, temperature=temperature,
-                                                        top_p=0.9, max_tokens=max_tokens, extra_body=extra)
+                r = self._create(model=self.model, messages=messages, temperature=temperature, top_p=0.9,
+                                 max_tokens=max_tokens, extra_body=extra)
             except Exception as e:
                 self.calls.append(CallRecord(role, time.perf_counter() - t0, 0, 0, False, str(e)[:300]))
                 raise
@@ -72,6 +73,20 @@ class LLM:
                 if finish == "length":           # truncated, not malformed: give the retry room to finish
                     max_tokens = min(2 * max_tokens, 16384)
         raise RuntimeError("unreachable")
+
+    def _create(self, **kw):
+        """Completion that waits out a server restart: the Thor is shared, and an OOM kill restarts tsf-llm, which
+        is unreachable (connection refused / 502 / 503) for a few minutes while it reloads."""
+        deadline = time.monotonic() + RESTART_WAIT_S
+        while True:
+            try:
+                return self.client.chat.completions.create(**kw)
+            except (APIConnectionError, APIStatusError) as e:
+                if isinstance(e, APIStatusError) and e.status_code not in (502, 503):
+                    raise
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(15)
 
     def stats(self) -> dict:
         ok = [c for c in self.calls if c.ok]

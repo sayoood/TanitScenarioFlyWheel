@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from tsf.agents.harness import ROOT as HARNESS_ROOT, Harness
-from tsf.server.runs import ROOT, RUNS, Store
+from tsf.server.runs import ROOT, RUNS, Store, summary
 
 LLM_URL = os.environ.get("TSF_LLM_URL", "http://127.0.0.1:8000/v1")
 COSMOS = {"cosmos_sim": os.environ.get("TSF_COSMOS_SIM_URL", "http://127.0.0.1:8001"),
@@ -153,7 +153,53 @@ def get_run(rid: str):
     videos = [a["name"] for a in run.get("artifacts", []) if a["kind"] == "video" and a["name"].startswith("cam_")]
     if videos:
         run["cameras"] = [{"name": v[4:-4], "artifact": v} for v in videos]
+    kids = _augmentations(rid)
+    if kids:
+        run["augmentations"] = kids       # child augmentation jobs of this run (newest first)
     return run
+
+
+def _augmentations(rid: str) -> list[dict]:
+    rows = []
+    for p in store.root.glob("*/run.json"):
+        try:
+            d = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if d.get("uc") == "augment" and (d.get("input") or {}).get("parent_run") == rid:
+            a = d.get("augment") or {}
+            rows.append({**summary(d), "mode": a.get("mode"), "seed": a.get("seed"), "n_variants": len(a.get("variants", [])),
+                         "dimensions": sorted({x for v in a.get("variants", []) for x in v.get("dimensions", [])})})
+    return sorted(rows, key=lambda r: r["created"], reverse=True)
+
+
+@app.post("/api/runs/{rid}/augment")
+def augment_run(rid: str, body: dict = Body(default={})):
+    """Child job: variants of this run's verified TSIR along weather / behaviour / environment (tsf.agents.augment).
+
+    Body: {"mode": "auto"|"manual", "requests": {"weather": "...", "behavior": "...", "environment": "..."},
+           "seed": 0, "separate": false, "render": false, "criticality": true, "package": true,
+           "cameras": [...], "frames": 97, "lidar": true}"""
+    _run(rid)
+    if not (store.path(rid) / "tsir.json").exists():
+        raise HTTPException(409, f"run {rid} has no verified TSIR yet (it must have passed the verifier ladder)")
+    mode = body.get("mode", "auto")
+    if mode not in ("auto", "manual"):
+        raise HTTPException(422, "mode must be 'auto' or 'manual'")
+    reqs = {k: str(v).strip() for k, v in (body.get("requests") or {}).items()
+            if k in ("weather", "behavior", "environment") and v and str(v).strip()}
+    if mode == "manual" and not reqs:
+        raise HTTPException(422, "manual mode needs at least one of requests.weather / behavior / environment")
+    inp = {"parent_run": rid, "mode": mode, "requests": reqs or None, "seed": int(body.get("seed", 0)),
+           "separate": bool(body.get("separate", False))}
+    opts = {k: body[k] for k in ("render", "criticality", "package", "cameras", "frames", "lidar", "wait_s", "workers") if k in body}
+    return store.create("augment", inp, opts)
+
+
+@app.get("/api/runs/{rid}/augmentations")
+def list_augmentations(rid: str):
+    _run(rid)
+    return _augmentations(rid)
 
 
 @app.get("/api/runs/{rid}/artifacts/{name}")

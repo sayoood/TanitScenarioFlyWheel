@@ -256,7 +256,8 @@ class TanitSim:
                 ag.turns_all = list(a.route)
                 ag.headway = a.headway or 1.5
                 if a.role == "ego" and ego_policy is not None:
-                    ag.external = True
+                    ag.external = True          # integrated kinematically from here on: start at its scenario pose
+                    ag.x, ag.y, ag.yaw = ag.path.pose(ag.p, ag.d)
             self.agents[a.id] = ag
         self.actions = {act.id: act for act in sc.actions}
         self.started: dict[str, float] = {}

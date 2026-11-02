@@ -1,4 +1,5 @@
 import type {
+  AugmentRequest,
   CreateRunRequest,
   FlywheelEvent,
   AgentKnobs,
@@ -21,6 +22,8 @@ export interface FlywheelApi {
   health(): Promise<Health>;
   listRuns(limit?: number): Promise<RunSummary[]>;
   createRun(body: CreateRunRequest): Promise<RunSummary>;
+  /** Child job: weather / behaviour / environment variants of a finished run's verified TSIR. */
+  augmentRun(runId: string, body: AugmentRequest): Promise<RunSummary>;
   getRun(id: string): Promise<RunDetail>;
   getScene(id: string): Promise<Scene>;
   /** Absolute URL of an artifact (usable in <video src> or <a download>). */

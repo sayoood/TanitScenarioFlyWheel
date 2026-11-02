@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { useApi } from "./provider";
-import type { AgentKnobs, CreateRunRequest, LessonStatus, PipelineConfig, StageName } from "./types";
+import type { AgentKnobs, AugmentRequest, CreateRunRequest, LessonStatus, PipelineConfig, StageName } from "./types";
 
 /** Query keys always carry the API identity so mock and live data never mix in the cache. */
 function useKey() {
@@ -28,7 +28,12 @@ export function useRun(id: string | undefined) {
     queryKey: key("run", id),
     queryFn: () => api.getRun(id as string),
     enabled: !!id,
-    refetchInterval: (q) => (q.state.data && (q.state.data.status === "running" || q.state.data.status === "queued") ? 1500 : false),
+    refetchInterval: (q) => {
+      const d = q.state.data;
+      const live = (x: string) => x === "running" || x === "queued";
+      // also while an augmentation job of this run is in flight: its status chip lives in this run's detail
+      return d && (live(d.status) || (d.augmentations ?? []).some((a) => live(a.status))) ? 1500 : false;
+    },
   });
 }
 
@@ -88,6 +93,18 @@ export function useCreateRun() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: [api.kind, api.base, "runs"] });
       void qc.invalidateQueries({ queryKey: [api.kind, api.base, "health"] });
+    },
+  });
+}
+
+export function useAugmentRun(runId: string) {
+  const { api } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: AugmentRequest) => api.augmentRun(runId, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: [api.kind, api.base, "run", runId] });
+      void qc.invalidateQueries({ queryKey: [api.kind, api.base, "runs"] });
     },
   });
 }

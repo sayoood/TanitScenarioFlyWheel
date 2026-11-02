@@ -18,10 +18,26 @@ export const USE_CASES: UcMeta[] = [
   { id: "uc5", short: "UC5", name: "Negative snippet to corrective data", blurb: "Positive twin plus variations for a failure.", inputLabel: "Snippet", color: "var(--color-uc5)" },
 ];
 
+const AUGMENT_UC: UcMeta = { id: "uc1", short: "AUG", name: "Scenario augmentation", blurb: "Weather, behaviour and environment variants of a verified scenario.", inputLabel: "Parent run", color: "var(--color-accent-2)" };
+
 export const ucMeta = (id: string): UcMeta =>
-  USE_CASES.find((u) => u.id === id) ?? { id: "uc1", short: id.toUpperCase(), name: id, blurb: "", inputLabel: "Input", color: "var(--color-fg-1)" };
+  USE_CASES.find((u) => u.id === id) ?? (id === "augment" ? AUGMENT_UC : undefined) ?? { id: "uc1", short: id.toUpperCase(), name: id, blurb: "", inputLabel: "Input", color: "var(--color-fg-1)" };
 
 export const STAGE_LABEL: Record<StageName, string> = {
+  brief: "Brief",
+  replay_negative: "Replay negative",
+  twin: "Twin",
+  lift: "Lift",
+  vipe: "ViPE",
+  scene: "Scene",
+  sensors: "Sensors",
+  parent: "Parent check",
+  plan: "Plan",
+  edit: "Edit (LLM patch)",
+  criticality: "Criticality",
+  package: "Package",
+  render: "Render sensors",
+  judge: "Judge",
   analyse: "Analyse",
   propose: "Propose",
   verify: "Verify",
@@ -35,6 +51,20 @@ export const STAGE_LABEL: Record<StageName, string> = {
 };
 
 export const STAGE_HINT: Record<StageName, string> = {
+  brief: "Incident brief and scenario requests",
+  replay_negative: "Negative TSIR that reproduces the incident",
+  twin: "Counterfactual positive twin",
+  lift: "Deterministic lift of the sensor snippet",
+  vipe: "ViPE ego motion and scene reconstruction",
+  scene: "VLM scene description",
+  sensors: "Camera + LiDAR through Cosmos3 Sim-Auto",
+  parent: "Parent scenario re-verified (ladder L0 to L3)",
+  plan: "Dimension targets: seeded weather draw, scenario-specific levers",
+  edit: "Qwen3.8 emits a whitelisted JSON patch",
+  criticality: "Sobol + cross-entropy search to a min-TTC band",
+  package: "OpenDRIVE, OpenSCENARIO and IMDAD v2 record",
+  render: "Camera + LiDAR through Cosmos3 Sim-Auto",
+  judge: "VLM on generated frames, LiDAR checks",
   analyse: "Parse intent, retrieve lessons, reconstruct inputs",
   propose: "Lifter agent emits TSIR (constrained decoding)",
   verify: "Verifier ladder L0 to L5",

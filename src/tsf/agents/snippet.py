@@ -49,6 +49,11 @@ def lift_snippet(spec: str, workdir: Path, polarity: str = "positive") -> dict:
     ev = event_text(cid)
     te = float(ev.split("t=")[1].split("s")[0]) if "t=" in ev else 8.0
     start = float(t0s) if t0s else max(0.0, te - 6.0)
+    if not t0s and polarity == "negative":
+        # a twin can only brake earlier and gentler if the window opens >= 4 s before the logged hard brake
+        hard = clip.t[np.gradient(clip.v, clip.t) < -3.0]
+        if len(hard):
+            start = max(0.0, min(start, float(hard[0]) - 4.0))
     d = pai_av.lift(clip, t0=start, duration=min(15.0, clip.t[-1] - start), polarity=polarity,
                     title=f"PhysicalAI-AV {cid[:8]}: {ev.split(': ', 1)[-1][:80]}" if ev else "",
                     description=f"Lifted from a 20 s PhysicalAI-AV clip (GT egomotion + auto-labelled tracks). Event: {ev}")

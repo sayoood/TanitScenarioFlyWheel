@@ -18,6 +18,21 @@ export const STAGE_NODE: Record<StageName, NodeId> = {
   wsm: "render",
   cosmos_transfer: "render",
   closed_loop: "loop",
+  // stages of the other use cases and of the augmentation job
+  brief: "ir",
+  replay_negative: "ir",
+  twin: "ir",
+  lift: "ir",
+  vipe: "ir",
+  scene: "ir",
+  parent: "verify",
+  plan: "ir",
+  edit: "ir",
+  criticality: "sim",
+  package: "verify",
+  sensors: "render",
+  render: "render",
+  judge: "verify",
 };
 
 const W = 1000;

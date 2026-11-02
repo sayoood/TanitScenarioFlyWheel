@@ -1,7 +1,9 @@
-import { ArrowLeft, Box, Camera, Code2, Copy, FileJson, ListChecks, Workflow } from "lucide-react";
+import { ArrowLeft, Box, Camera, Code2, Copy, FileJson, ListChecks, Radar, Sparkles, Workflow } from "lucide-react";
 import { useEffect, useMemo, type ReactNode } from "react";
 import { Link, useParams } from "react-router";
 import { StatusChip, UcBadge } from "../components/common";
+import { AugmentPanel } from "../components/run/AugmentPanel";
+import { AugmentResults } from "../components/run/AugmentResults";
 import { CameraGrid } from "../components/run/CameraGrid";
 import { CodeViewer } from "../components/run/CodeViewer";
 import { LadderViz } from "../components/run/LadderViz";
@@ -14,6 +16,7 @@ import { Chip, EmptyState, Panel, Skeleton } from "../components/ui/primitives";
 import { bytes, duration, shortDate } from "../lib/format";
 import { ucMeta } from "../lib/meta";
 import { useRun, useScene } from "../lib/hooks";
+import { useApi } from "../lib/provider";
 import type { RunDetail } from "../lib/types";
 
 function SceneSection({ run }: { run: RunDetail }) {
@@ -57,6 +60,30 @@ function SceneSection({ run }: { run: RunDetail }) {
   );
 }
 
+/** Camera + LiDAR registered by the sensors stage (mosaic.mp4, lidar_bev.mp4, sensors.json). */
+function SensorsSection({ run }: { run: RunDetail }) {
+  const { api } = useApi();
+  const has = (n: string) => run.artifacts.some((a) => a.name === n);
+  if (!has("mosaic.mp4")) return null;
+  return (
+    <Panel id="sensors" eyebrow="Cosmos 3 Sim-Auto" title="Camera and LiDAR" className="mt-5 scroll-mt-24"
+      actions={has("sensors.json") && <a className="btn btn-sm" href={api.artifactUrl(run.id, "sensors.json")} target="_blank" rel="noreferrer">sensors.json</a>}>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <figure className="m-0">
+          <video className="w-full rounded-lg border border-line bg-black" src={api.artifactUrl(run.id, "mosaic.mp4")} controls loop muted playsInline preload="metadata" />
+          <figcaption className="mt-1 text-[11.5px] text-fg-2">Cameras, LiDAR views and TanitSim BEV</figcaption>
+        </figure>
+        {has("lidar_bev.mp4") && (
+          <figure className="m-0">
+            <video className="w-full rounded-lg border border-line bg-black" src={api.artifactUrl(run.id, "lidar_bev.mp4")} controls loop muted playsInline preload="metadata" />
+            <figcaption className="mt-1 text-[11.5px] text-fg-2">Generated LiDAR, bird's-eye view</figcaption>
+          </figure>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 export default function RunDetailPage() {
   const { id } = useParams();
   const run = useRun(id);
@@ -83,6 +110,7 @@ export default function RunDetailPage() {
   const r = run.data;
   const uc = ucMeta(r.uc);
   const running = r.status === "running" || r.status === "queued";
+  const isAug = r.uc === "augment";
 
   return (
     <div>
@@ -108,13 +136,21 @@ export default function RunDetailPage() {
             </div>
           </div>
           <nav aria-label="Sections" className="flex flex-wrap gap-1.5">
-            {[
-              ["#pipeline", "Pipeline", Workflow],
-              ["#verifier", "Verifier", ListChecks],
-              ["#scene", "Scene", Box],
-              ["#cameras", "Cameras", Camera],
-              ["#code", "Code", Code2],
-            ].map(([href, label, Icon]) => {
+            {(isAug
+              ? [
+                  ["#pipeline", "Pipeline", Workflow],
+                  ["#variants", "Variants", Sparkles],
+                ]
+              : [
+                  ["#pipeline", "Pipeline", Workflow],
+                  ["#verifier", "Verifier", ListChecks],
+                  ["#scene", "Scene", Box],
+                  ["#cameras", "Cameras", Camera],
+                  ["#sensors", "Sensors", Radar],
+                  ["#augment", "Augment", Sparkles],
+                  ["#code", "Code", Code2],
+                ]
+            ).map(([href, label, Icon]) => {
               const I = Icon as typeof Workflow;
               return (
                 <a key={String(href)} href={String(href)} className="btn btn-sm">
@@ -131,6 +167,13 @@ export default function RunDetailPage() {
           <StageTimeline run={r} />
         </Panel>
 
+        {isAug ? (
+          <Panel id="variants" eyebrow="Augmentation" title="Variants" className="scroll-mt-24"
+            actions={r.input?.parent_run && <Link className="btn btn-sm" to={`/runs/${r.input.parent_run}#augment`}>Parent run</Link>}>
+            {r.augment ? <AugmentResults runId={r.id} info={r.augment} running={running} /> : <EmptyState title="No result yet">{r.error ?? "The job has not produced variants."}</EmptyState>}
+          </Panel>
+        ) : (
+        <>
         <div className="grid grid-cols-12 gap-5">
           <Panel id="verifier" eyebrow="Reward signal" title="Verifier ladder L0 to L5" className="col-span-12 scroll-mt-24 xl:col-span-7">
             <LadderViz attempts={r.attempts} running={running} />
@@ -161,10 +204,15 @@ export default function RunDetailPage() {
         </div>
 
         <SceneSection run={r} />
+        <SensorsSection run={r} />
+
+        <AugmentPanel run={r} />
 
         <Panel id="code" eyebrow="Compilers" title="Generated artifacts" className="scroll-mt-24">
           <CodeViewer run={r} />
         </Panel>
+        </>
+        )}
       </div>
     </div>
   );

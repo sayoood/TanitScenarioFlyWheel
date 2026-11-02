@@ -48,6 +48,20 @@ export interface Health {
 export type UseCaseId = "uc1" | "uc2" | "uc3" | "uc4" | "uc5";
 
 export type StageName =
+  | "brief"
+  | "replay_negative"
+  | "twin"
+  | "lift"
+  | "vipe"
+  | "scene"
+  | "sensors"
+  | "parent"
+  | "plan"
+  | "edit"
+  | "criticality"
+  | "package"
+  | "render"
+  | "judge"
   | "analyse"
   | "propose"
   | "verify"
@@ -107,7 +121,115 @@ export interface Artifact {
   size: number;
 }
 
+// ----------------------------------------------------------------------------- scenario augmentation
+export type AugmentDimension = "weather" | "behavior" | "environment";
+export type AugmentMode = "auto" | "manual";
+
+export interface AugmentRequest {
+  mode: AugmentMode;
+  requests?: Partial<Record<AugmentDimension, string>>;
+  seed: number;
+  separate?: boolean;
+  render?: boolean;
+  criticality?: boolean;
+  package?: boolean;
+}
+
+export interface AugmentChange {
+  path: string;
+  op: "add" | "replace" | "remove";
+  before?: unknown;
+  after?: unknown;
+}
+
+export interface AugmentAttempt {
+  index: number;
+  lever?: string;
+  stage: string;
+  passed: boolean;
+  issues: string[];
+  seconds?: number;
+  limitations?: string | null;
+  tokens?: { prompt?: number; completion?: number };
+}
+
+export interface AugmentJudge {
+  ok?: boolean | null;
+  skipped?: string;
+  camera?: {
+    ok?: boolean | null;
+    skipped?: string;
+    weather_agrees?: boolean;
+    time_band_score?: number;
+    objects_visible_ratio?: number | null;
+    expected?: { weather: string; time_band: string; objects: string[] };
+    answer?: { weather: string; time_of_day: string; road_wet_or_snowy: boolean; note: string };
+  };
+  lidar?: { ok?: boolean | null; skipped?: string; error?: string; warnings?: string[]; numbers?: Record<string, number | null> };
+  rerender?: unknown;
+  parent?: { camera?: AugmentJudge["camera"]; lidar?: AugmentJudge["lidar"] };
+}
+
+export interface AugmentVariant {
+  index: number;
+  id: string;
+  parent_id: string;
+  mode: AugmentMode;
+  seed: number;
+  dimensions: AugmentDimension[];
+  requests?: Partial<Record<AugmentDimension, string>> | null;
+  status: "ok" | "failed";
+  error?: string;
+  title?: string;
+  description?: string;
+  lever?: string;
+  rationale?: string;
+  limitations?: string | null;
+  first_pass_valid: boolean;
+  repairs: number;
+  isolation?: { ok: boolean; violations: { path: string; op: string; why: string }[]; by_dim: Record<string, number>; untouched: string[] };
+  description_check?: { ok: boolean; attempts: number; first_pass: boolean; missing: string[]; attributes: string[] };
+  criticality?: { band: [number, number]; searched: boolean; landed: boolean; initial_min_ttc?: number | null; min_ttc?: number | null; reason?: string; sims?: number; params?: string[]; retuned?: { path: string; before: number; after: number }[] } | null;
+  effect?: { ego_dev_m: number; actors_changed: string[]; new_actors: string[]; min_ttc: [number | null, number | null]; ego_max_decel: [number, number]; ego_relevant: boolean } | null;
+  plan?: { weather?: { weather: string; band: string; environment: Record<string, unknown> }; levers?: Record<string, { id: string; text: string }[]> };
+  verifier?: { passed: boolean; score: number; metrics?: Record<string, unknown>; qc_run?: boolean; findings: Finding[] };
+  package?: { scenario_structure_valid: boolean; imdad_record_valid: boolean; imdad_record_errors: string[]; scenario_structure_errors: string[] };
+  patch?: { op: string; path: string; value?: unknown }[];
+  diff?: AugmentChange[];
+  housekeeping?: string[];
+  attempts: AugmentAttempt[];
+  timings: Record<string, number>;
+  tokens?: { calls: number; prompt_tokens: number; completion_tokens: number; tok_per_s: number };
+  tokens_judge?: { calls: number; prompt_tokens: number; completion_tokens: number };
+  render?: { skipped?: string; error?: string; seed?: number; t0?: number; render_s?: number; geometry_reused?: boolean };
+  judge?: AugmentJudge;
+  /** artifact names (relative to the augment run): tsir, xodr, xosc, osc2, package, imdad_record, mosaic, lidar_bev, sensors */
+  media: Record<string, string>;
+}
+
+export interface AugmentInfo {
+  mode: AugmentMode;
+  seed: number;
+  separate: boolean;
+  requests?: Partial<Record<AugmentDimension, string>> | null;
+  render: boolean;
+  progress: Record<string, { stage: string; status: string; detail: string }>;
+  variants: AugmentVariant[];
+  parent_media?: { mosaic?: string; lidar_bev?: string };
+  wall_s?: number;
+}
+
+export interface AugmentationRef extends RunSummary {
+  mode?: AugmentMode;
+  seed?: number;
+  n_variants: number;
+  dimensions: AugmentDimension[];
+}
+
 export interface RunDetail extends RunSummary {
+  error?: string;
+  augment?: AugmentInfo;
+  augmentations?: AugmentationRef[];
   input: any;
   stages: Stage[];
   attempts: Attempt[];

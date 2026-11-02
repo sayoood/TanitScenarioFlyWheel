@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.stats import qmc
 
-from tsf.ir.scenario import Scenario
+from tsf.ir.scenario import ParameterRange, Scenario
 from tsf.sim.engine import TanitSim
 from tsf.sim.odr import OdrMap
 
@@ -87,6 +87,43 @@ def criticality(metrics: dict, ttc_band=(0.8, 3.0)) -> float:
     return max(c_ttc, c_dec)
 
 
+def auto_parameters(doc: dict, max_params: int = 6) -> list[ParameterRange]:
+    """Behaviour levers for a TSIR without (usable) `parameters`: initial speeds and gaps of the NPCs closest to the
+    ego, the ego's initial speed, target speeds and sim-time triggers of speed changes. Ranges are relative to the
+    parent so every variant stays a perturbation of the same scenario."""
+    actors = doc["actors"]
+    ego = next((a for a in actors if a["role"] == "ego"), actors[0])
+    near = sorted((i for i, a in enumerate(actors) if a is not ego),
+                  key=lambda i: abs(actors[i]["initial"]["s"] - ego["initial"]["s"]))
+    out: list[ParameterRange] = []
+
+    def add(name, path, v, lo, hi):
+        if hi > lo and _resolves(doc, path):
+            out.append(ParameterRange(name=name, path=path, distribution="uniform", low=round(lo, 2), high=round(hi, 2)))
+
+    for i in near[:2]:
+        a = actors[i]
+        v, s = float(a["initial_speed"]), float(a["initial"]["s"])
+        if v > 0.5:                         # a stationary obstacle stays stationary
+            add(f"{a['id']}_speed", f"/actors/{i}/initial_speed", v, 0.75 * v, 1.25 * v)
+        add(f"{a['id']}_s", f"/actors/{i}/initial/s", s, max(0.0, s - 8.0), s + 8.0)
+    i_ego = actors.index(ego)
+    v = float(ego["initial_speed"])
+    if v > 0.5:
+        add("ego_speed", f"/actors/{i_ego}/initial_speed", v, 0.85 * v, 1.15 * v)
+    for j, act in enumerate(doc.get("actions", [])):
+        if len(out) >= max_params:
+            break
+        if act.get("type") == "speed_change" and act["actor"] != ego["id"]:
+            ts = float(act["target_speed"])
+            add(f"{act['id']}_target", f"/actions/{j}/target_speed", ts, max(0.0, 0.8 * ts), max(1.0, 1.2 * ts))
+        start = act.get("start") or {}
+        if start.get("kind") == "sim_time" and float(start.get("t", 0)) > 0.5 and len(out) < max_params:
+            t = float(start["t"])
+            add(f"{act['id']}_t", f"/actions/{j}/start/t", t, max(0.0, t - 1.0), t + 1.0)
+    return out[:max_params]
+
+
 class Augmenter:
     def __init__(self, sc: Scenario, m: OdrMap, grid: int = 8, seed: int = 0):
         self.sc, self.m, self.grid = sc, m, grid
@@ -95,6 +132,8 @@ class Augmenter:
         self.params = [p for p in sc.parameters if p.name not in APPEARANCE and p.distribution in ("uniform", "normal")
                        and p.path.split("/")[-1] not in APPEARANCE and p.low is not None and p.high is not None
                        and p.high > p.low and _resolves(self.base, p.path)]
+        if not self.params:                 # lifted twins and LLM scenarios often declare none: derive the levers
+            self.params = auto_parameters(self.base)
         self.rng = np.random.default_rng(seed)
 
     def _eval(self, u: np.ndarray, keep_assertions: set[str]) -> Variant:

@@ -7,6 +7,9 @@ import { readRaw, writeJSON } from "../storage";
 import { UC1_EXAMPLES } from "../meta";
 import type {
   AgentKnobs,
+  AugmentDimension,
+  AugmentRequest,
+  AugmentVariant,
   CreateRunRequest,
   FlywheelEvent,
   Health,
@@ -301,10 +304,92 @@ export class MockApi implements FlywheelApi {
     return `Corrective data for negative snippet ${val.split(":").pop()}`;
   }
 
+  /** Mock of POST /api/runs/{id}/augment: an already finished child job with plausible variants (no sensor data). */
+  async augmentRun(runId: string, body: AugmentRequest): Promise<RunSummary> {
+    const parent = this.recs.get(runId);
+    if (!parent) throw new ApiError(`404 run ${runId} not found`, 404);
+    const reqs = body.requests ?? {};
+    const given = (["weather", "behavior", "environment"] as AugmentDimension[]).filter((d) => (reqs[d] ?? "").trim());
+    if (body.mode === "manual" && given.length === 0) throw new ApiError("422 manual mode needs at least one request", 422);
+    const id = `run_${Math.floor(Math.random() * 0xffff).toString(16).padStart(4, "0")}`;
+    const rnd = mulberry32(hashStr(id) + body.seed);
+    const groups: AugmentDimension[][] = body.mode === "auto" ? [["weather"], ["behavior"], ["environment"]] : body.separate ? given.map((d) => [d]) : [given];
+    const WEATHER = ["heavy_rain", "fog", "snow", "cloudy", "rain"];
+    const variants: AugmentVariant[] = groups.map((dims, i) => {
+      const w = WEATHER[Math.floor(rnd() * WEATHER.length)];
+      const ttc = Math.round((1 + rnd() * 1.5) * 100) / 100;
+      const diff: NonNullable<AugmentVariant["diff"]> = [];
+      if (dims.includes("weather")) diff.push({ path: "/environment/weather", op: "replace", before: "clear", after: w }, { path: "/environment/time_of_day", op: "replace", before: "11:30", after: rnd() < 0.5 ? "22:10" : "06:40" });
+      if (dims.includes("behavior")) diff.push({ path: "/actions/5", op: "remove", before: "stop_at_line(cross_south)" }, { path: "/actions/6", op: "add", after: "speed_change(cross_south, 8.0 m/s)" });
+      if (dims.includes("environment")) diff.push({ path: "/road/approaches/2/inbound/driving_lanes", op: "replace", before: 2, after: 3 }, { path: "/road/approaches/2/speed_limit_kph", op: "replace", before: 50, after: 30 });
+      const title = `${dims.map((d) => ({ weather: `${w.replace("_", " ")} at night`, behavior: "oncoming vehicle arrives faster", environment: "third inbound lane, 30 km/h" })[d]).join(", ")}`;
+      return {
+        index: i + 1,
+        id: `${parent.final.id}_aug_${dims[0][0]}${body.seed}`,
+        parent_id: parent.final.id,
+        mode: body.mode,
+        seed: body.seed,
+        dimensions: dims,
+        requests: body.mode === "manual" ? reqs : null,
+        status: "ok",
+        title: title.charAt(0).toUpperCase() + title.slice(1),
+        description: `Variant of "${parent.final.title}": ${title}. The ego keeps its manoeuvre; the changed attributes are named explicitly and verified in the simulator.`,
+        lever: body.mode === "auto" && !dims.includes("weather") ? "faster_oncoming_1" : "plan",
+        rationale: "Mock data: the live API returns the editor's rationale here.",
+        first_pass_valid: rnd() < 0.7,
+        repairs: rnd() < 0.7 ? 0 : 1,
+        isolation: { ok: true, violations: [], by_dim: Object.fromEntries(dims.map((d) => [d, diff.length])), untouched: [] },
+        description_check: { ok: true, attempts: 1, first_pass: true, missing: [], attributes: diff.map((d) => d.path) },
+        criticality: dims.includes("behavior") ? { band: [1, 2.5], searched: true, landed: true, initial_min_ttc: 4.5, min_ttc: ttc, sims: 32 } : null,
+        verifier: {
+          passed: true,
+          score: 1,
+          metrics: { min_ttc: dims.includes("behavior") ? ttc : 4.5 },
+          findings: [
+            { level: "L0", check: "tsir_schema", ok: true, message: "" },
+            { level: "L1", check: "opendrive_xsd", ok: true, message: "" },
+            { level: "L2", check: "junction_movements", ok: true, message: "" },
+            { level: "L3", check: "no_collision", ok: true, message: "" },
+          ],
+        },
+        package: { scenario_structure_valid: true, imdad_record_valid: true, imdad_record_errors: [], scenario_structure_errors: [] },
+        diff,
+        patch: diff.map((d) => ({ op: d.op, path: d.path, value: d.after })),
+        attempts: [{ index: 0, stage: "ok", passed: true, issues: [], lever: "plan", seconds: 6 }],
+        timings: { edit_s: 6, verify_s: 2, describe_s: 5, total_s: 14 + i },
+        media: {},
+        render: { skipped: "mock backend: no sensor rendering" },
+        judge: { skipped: "no render" },
+      };
+    });
+    const created = iso(Date.now());
+    const final: RunDetail = {
+      id,
+      uc: "augment",
+      title: `AUGMENT · ${body.mode} · ${parent.final.title.slice(0, 60)}`,
+      status: "ok",
+      created,
+      seconds: 18,
+      input: { parent_run: runId, mode: body.mode, requests: reqs, seed: body.seed },
+      stages: ["parent", "plan", "edit", "verify", "describe", "package"].map((n) => ({ name: n as StageName, status: "ok" as const, seconds: 2 })),
+      attempts: [],
+      metrics: {},
+      artifacts: [],
+      augment: { mode: body.mode, seed: body.seed, separate: !!body.separate, requests: reqs, render: !!body.render, progress: {}, variants, wall_s: 18 },
+    };
+    this.recs.set(id, { id, final, plan: [], state: "ok", cursor: 0, stageT0: Date.now(), wallMs: [], seed: hashStr(id) });
+    this.order.unshift(id);
+    this.log(id, `augmentation job finished (${variants.length} variants)`);
+    return { id, uc: "augment", title: final.title, status: "ok", created, seconds: 18 };
+  }
+
   async getRun(id: string): Promise<RunDetail> {
     const r = this.recs.get(id);
     if (!r) throw new ApiError(`404 run ${id} not found`, 404);
-    const d = this.snapshot(r);
+    const kids = [...this.recs.values()]
+      .filter((k) => k.final.uc === "augment" && (k.final.input as Record<string, unknown>)?.parent_run === id)
+      .map((k) => ({ id: k.final.id, uc: k.final.uc, title: k.final.title, status: k.final.status, created: k.final.created, seconds: k.final.seconds, mode: k.final.augment?.mode, seed: k.final.augment?.seed, n_variants: k.final.augment?.variants.length ?? 0, dimensions: [...new Set(k.final.augment?.variants.flatMap((v) => v.dimensions) ?? [])] }));
+    const d = { ...this.snapshot(r), ...(kids.length ? { augmentations: kids } : {}) };
     const docDone = d.artifacts.some((a) => a.kind === "package");
     if (docDone && !d.package) {
       const q = String((d.input as Record<string, unknown>)?.query ?? d.title);

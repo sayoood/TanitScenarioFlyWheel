@@ -1,6 +1,7 @@
 import { ApiError, type FlywheelApi } from "./api";
 import type {
   AgentKnobs,
+  AugmentRequest,
   CreateRunRequest,
   FlywheelEvent,
   Health,
@@ -61,6 +62,8 @@ export class LiveApi implements FlywheelApi {
   health = () => this.req<Health>("/api/health", { timeoutMs: 4000 });
   listRuns = (limit = 50) => this.req<RunSummary[]>(`/api/runs?limit=${limit}`);
   createRun = (body: CreateRunRequest) => this.req<RunSummary>("/api/runs", { method: "POST", body: JSON.stringify(body) });
+  augmentRun = (runId: string, body: AugmentRequest) =>
+    this.req<RunSummary>(`/api/runs/${encodeURIComponent(runId)}/augment`, { method: "POST", body: JSON.stringify(body) });
   getRun = (id: string) => this.req<RunDetail>(`/api/runs/${encodeURIComponent(id)}`);
   getScene = (id: string) => this.req<Scene>(`/api/runs/${encodeURIComponent(id)}/scene`, { timeoutMs: 30000 });
   artifactUrl = (runId: string, name: string) =>

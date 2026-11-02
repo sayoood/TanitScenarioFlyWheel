@@ -1,0 +1,10 @@
+- Touch only the JSON pointers allowed for the requested dimension(s); never write `/meta`, `/parameters` or any other path.
+- Change only what the request or the chosen lever needs and keep every other value, id and ordering of the parent untouched.
+- Never rename or delete the ego, never add a second ego, and never reference an actor, action or lane that does not exist after the patch.
+- Never delete an assertion. Retune a threshold only when the new behaviour makes it impossible.
+- Keep NPCs from overlapping at t = 0 and keep every actor on a valid lane (lane <= driving_lanes of its road).
+- Speeds stay plausible: at most the speed limit + 20 %, junction turns at 4-9 m/s.
+- For weather and time of day change precipitation, fog_visibility_m, cloud_cover and road_surface consistently with `weather`; `time_of_day` is `HH:MM`.
+- Prefer appending (`/actors/-`, `/actions/-`, `/static_objects/-`) over inserting; do removals last, highest index first.
+- When asked for several dimensions, realise all of them in one patch.
+- Write a one-line rationale that says why the change matters for testing.
