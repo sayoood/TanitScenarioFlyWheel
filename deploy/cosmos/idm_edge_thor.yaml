@@ -1,0 +1,33 @@
+# Cosmos3-Edge inverse dynamics (video -> ego actions) on the Jetson AGX Thor (tsf-thor / thor3 only). Read by tsf.cosmos.idm.
+#
+# vLLM-Omni auto-detects the pipeline from model_index.json (Cosmos3OmniPipeline), so no --deploy-config is needed; the single
+# diffusion stage has no KV pool to size (weights 7.1 GiB on the GPU, +~1 GiB host-side per request, see scripts/idm_compare.py).
+# One heavy model at a time: serve only when no tsf-vipe / tsf-cosmos-* container runs, T1 has finished and MemAvailable > 40 GB.
+model: nvidia/Cosmos3-Edge            # nvidia/Cosmos3-Edge @ 344d602 (2026-08-25 refresh), 9.2 GB: transformer 6.7 + vision 1.0 + VAE 1.4 GB
+image: vllm/vllm-omni:cosmos3-aarch64
+container: tsf-cosmos-idm
+port: 8100                            # host side, 127.0.0.1 only (container 8000)
+server_args: [--omni, --no-guardrails, --host, 0.0.0.0, --port, "8000", --init-timeout, "1800"]
+env:
+  HF_HUB_OFFLINE: "1"
+  VLLM_OMNI_VIDEO_SYNC_TIMEOUT: "3600"
+  FLASH_ATTENTION_CUTE_DSL_CACHE_ENABLED: "1"
+  FLASH_ATTENTION_CUTE_DSL_CACHE_DIR: /work/cache/fa_cute
+min_avail_gb: 40                      # start gate (free -g available)
+
+# POST /v1/videos (multipart, input_reference = 61-frame 10 fps 832x480 mp4); poll GET /v1/videos/{id}; response.action = [60, 9]
+request:
+  prompt: "You are an autonomous vehicle planning system."
+  num_frames: 61
+  fps: 10
+  num_inference_steps: 30
+  guidance_scale: 1.0
+  flow_shift: 10.0
+  extra_params:
+    action_mode: inverse_dynamics
+    domain_name: av
+    action_chunk_size: 60
+    image_size: 480
+    view_point: ego_view
+    raw_action_dim: 9
+    guardrails: false
