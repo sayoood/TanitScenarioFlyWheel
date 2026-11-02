@@ -112,7 +112,7 @@ class EgoPlan(BaseModel):
     diagnosis: str = Field(max_length=500, description="Why the logged ego behaviour is critical (cause, timing, numbers), at most 3 sentences")
     strategy: str = Field(max_length=500, description="The anticipatory/defensive behaviour of the positive twin, at most 3 sentences")
     initial_speed: float = Field(..., ge=0, description="m/s")
-    actions: list[EgoAction] = Field(..., min_length=1, max_length=8)
+    actions: list[EgoAction] = Field(..., min_length=1, max_length=12)   # 8 left no room for a lane_offset after 8 speed steps
 
 
 def _splice(neg: dict, plan: EgoPlan, assertions: list[dict]) -> dict:
@@ -187,7 +187,9 @@ def _ttc_feedback(rep) -> str:
         side = -1 if lat > 0 else 1
         txt += (f" {aid} is ONCOMING: slowing down cannot fix this, its own speed is in the closing speed. Add a "
                 f"lane_offset away from it (offset {side * 0.8:+.1f} to {side * 1.2:+.1f} m, + = left), started at "
-                f"least 3 s before t={t[c]:.1f} s, as the logged driver did, and keep the gentle speed reduction.")
+                f"least 3 s before t={t[c]:.1f} s, as the logged driver did, and keep the gentle speed reduction. "
+                "Only the actions list is executed, not the strategy text: the lane_offset must be one of the actions "
+                "(use at most 6 speed_change steps).")
     return txt
 
 
