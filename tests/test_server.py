@@ -94,3 +94,13 @@ def test_example_run_builds_package_and_skips_sensors(tmp_path, monkeypatch):
         assert st["analyse"] == "ok" and st["document"] == "ok" and st["sensors"] == "skipped" and st["closed_loop"] == "ok"
         assert d["kpis"]["package_valid"] is True
         assert c.get(f"/api/runs/{r['id']}/artifacts/package.json").status_code == 200
+
+
+def test_studio_render_options_start_the_sensors_stage():
+    """Studio's Rendering panel sends options.render (docs/API.md); the server maps it onto the sensors stage."""
+    from tsf.server.runs import _sensors_from_render
+    assert _sensors_from_render(None) is None and _sensors_from_render({}) is None
+    so = _sensors_from_render({"views": 3, "res": "720p", "frames": 121, "lidar": False})
+    assert so == {"cameras": ["camera_front_wide_120fov", "camera_cross_left_120fov", "camera_cross_right_120fov"],
+                  "frames": 121, "lidar": False, "res": "720"}
+    assert len(_sensors_from_render({"views": 99})["cameras"]) == 7

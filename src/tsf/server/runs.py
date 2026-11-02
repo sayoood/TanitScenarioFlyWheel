@@ -318,10 +318,11 @@ def downstream(ctx: Ctx, tsir: dict, rep):
         ctx.stage("augment", "ok", f"{res.sims} sims, {len(res.kept)} kept, coverage {res.coverage:.0%}")
         ctx.save()
 
-    if opt.get("sensors"):
-        _sensors(ctx, tsir, opt["sensors"] if isinstance(opt["sensors"], dict) else {})
+    so = opt.get("sensors") or _sensors_from_render(opt.get("render"))
+    if so:
+        _sensors(ctx, tsir, so if isinstance(so, dict) else {})
     else:
-        ctx.stage("sensors", "skipped", "not requested (options.sensors)")
+        ctx.stage("sensors", "skipped", "not requested (options.sensors / options.render)")
 
     pol = (opt.get("closed_loop") or {}).get("policy")
     if pol:
@@ -349,10 +350,25 @@ def _running_cosmos() -> list[str]:
         return []
 
 
+# Studio's "Rendering" panel sends options.render (docs/API.md) with a view count: the first n of these cameras
+_RENDER_CAMS = ("camera_front_wide_120fov", "camera_cross_left_120fov", "camera_cross_right_120fov",
+                "camera_rear_left_70fov", "camera_rear_right_70fov", "camera_front_tele_30fov", "camera_rear_tele_30fov")
+
+
+def _sensors_from_render(r) -> dict | None:
+    """``options.render`` {"views", "res", "frames", "lidar"} -> the sensors stage options."""
+    if not r:
+        return None
+    r = r if isinstance(r, dict) else {}
+    n = max(1, min(int(r.get("views", 3)), len(_RENDER_CAMS)))
+    return {"cameras": list(_RENDER_CAMS[:n]), "frames": int(r.get("frames", 97)), "lidar": bool(r.get("lidar", True)),
+            "res": str(r.get("res", "480")).removesuffix("p")}
+
+
 def _sensors(ctx: Ctx, tsir: dict, so: dict):
     """Camera + LiDAR (Cosmos3 Sim-Auto joint mode) of the verified scenario: ``tsf.cosmos.pipeline.render_sensors``.
 
-    Options ``{"cameras": [...], "frames": 97, "lidar": true, "t0": null, "seed": 0, "appearance": {...},
+    Options ``{"cameras": [...], "frames": 97, "lidar": true, "res": "480", "t0": null, "seed": 0, "appearance": {...},
     "wait_s": 0, "keep_server": false}``. The Cosmos slot and the unified memory are shared with other jobs: when the
     server is busy or missing the stage is *skipped* with the reason (``wait_s`` > 0 waits and retries) and the run goes on."""
     run, wd = ctx.run, ctx.dir
@@ -385,7 +401,7 @@ def _sensors(ctx: Ctx, tsir: dict, so: dict):
     try:
         kw = {"cameras": cams} if cams else {}
         res = render_sensors(tsir, wd / "sensors", frames=frames, lidar=lidar, seed=int(so.get("seed", 0)),
-                             t0=so.get("t0"), appearance=so.get("appearance"), **kw)
+                             t0=so.get("t0"), appearance=so.get("appearance"), res=str(so.get("res", "480")), **kw)
     except Exception as e:  # noqa: BLE001 - a failed render is reported, the verified scenario stays a valid run
         ctx.stage("sensors", "failed", f"{type(e).__name__}: {str(e)[:240]}")
         run["sensors"] = {"error": f"{type(e).__name__}: {str(e)[:400]}"}
