@@ -151,6 +151,105 @@ def behavior_levers(d: dict) -> list[tuple[str, str]]:
     return L
 
 
+def _lane_out(d: dict, a: dict) -> tuple[int, int] | None:
+    """(arm, outbound lane) a junction actor leaves by on its first turn (TanitSim's movement table), else None."""
+    from tsf.compile.xodr import turn_target
+
+    road, p = d["road"], a["initial"]
+    if road["type"] != "junction" or p.get("direction") != "inbound":
+        return None
+    from tsf.ir.scenario import Approach
+    apo = [Approach.model_validate(x) for x in road["approaches"]]
+    turn = (a.get("route") or ["straight"])[0]
+    j = turn_target(apo, p.get("road", 0), turn)
+    if j is None:
+        return None
+    n_out = apo[j].outbound.driving_lanes
+    lane = 1 if turn == "left" else n_out if turn == "right" else min(p.get("lane", 1), n_out)
+    return j, lane
+
+
+def _lanes_used(d: dict, a: dict) -> set[int]:
+    """Lanes an actor occupies along its scripted manoeuvres (start lane, every lane_change, a cut_in into the ego's lane)."""
+    lane = a["initial"].get("lane", 1)
+    out = {lane}
+    for x in sorted(_acts(d, a["id"]), key=lambda x: (x.get("start") or {}).get("t", 0.0)):
+        if x["type"] == "lane_change":
+            lane += -x.get("lanes", 1) if x["direction"] == "left" else x.get("lanes", 1)
+            out.add(lane)
+        elif x["type"] == "cut_in":
+            out.add(_ego(d)["initial"].get("lane", 1))
+    return out
+
+
+def _site(d: dict) -> dict:
+    """Where road works and roadside objects fit around the ego's path, from the parent TSIR alone:
+    coordinates (arm / road, direction, s increasing or decreasing in driving direction) and the lanes that are free."""
+    road, ego = d["road"], _ego(d)
+    p = ego["initial"]
+    junction = road["type"] == "junction"
+    direction = p.get("direction", "forward")
+    arm = p.get("road", 0)
+    cfg = (road["approaches"][arm]["inbound" if direction == "inbound" else "outbound"] if junction else
+           road["forward"] if direction == "forward" else road.get("backward") or road["forward"])
+    n = cfg.get("driving_lanes", 2)
+    length = road["approaches"][arm]["length"] if junction else sum(s["length"] for s in road.get("segments", [{"length": 1000}]))
+    sgn = -1 if direction == "inbound" else 1                     # s grows against the driving direction only on inbound arms
+    used = _lanes_used(d, ego)
+    busy: set[int] = set()
+    for a in d["actors"]:                                  # NPCs that reach the zone (70..115 m ahead of the ego) in time
+        q = a["initial"]
+        if a["role"] == "ego" or q.get("road", 0) != arm or q.get("direction", "forward") != direction:
+            continue
+        rel = (q["s"] - p["s"]) * sgn                      # + = ahead of the ego along the driving direction
+        if rel < 120 and (70 - rel) / max(a.get("initial_speed", 0.0), 0.5) <= d.get("duration", 20.0):
+            busy |= _lanes_used(d, a)
+    free = [k for k in range(n, 0, -1) if k not in used and k not in busy]       # outermost (right) lane first
+    exits = None
+    if junction and direction == "inbound":
+        e = _lane_out(d, ego)
+        if e:
+            n_out = road["approaches"][e[0]]["outbound"]["driving_lanes"]
+            taken = {e[1]} | {x[1] for a in d["actors"] if a["role"] != "ego" and (x := _lane_out(d, a)) and x[0] == e[0]}
+            exits = {"arm": e[0], "free": [k for k in range(n_out, 0, -1) if k not in taken], "ego_lane": e[1],
+                     "length": road["approaches"][e[0]]["length"]}
+    return {"junction": junction, "arm": arm, "direction": direction, "n": n, "ego_lane": p.get("lane", 1), "s0": p["s"],
+            "sgn": sgn, "length": length, "free": free, "exit": exits}
+
+
+def _s(site: dict, ahead: float) -> float:
+    """s of a point `ahead` m in front of the ego (inbound: s shrinks), kept 6 m inside the road."""
+    return int(round(min(max(site["s0"] + site["sgn"] * ahead, 6.0), site["length"] - 6.0)))
+
+
+def _roadworks_text(d: dict) -> str:
+    st = _site(d)
+    where = (f"arm {st['arm']} {st['direction']}" if st["junction"] else f"{st['direction']} lanes") + \
+        f" (ego: lane {st['ego_lane']} of {st['n']}, s={st['s0']:.0f}" + \
+        (", s is the distance to the stop line and SHRINKS while driving)" if st["sgn"] < 0 else ", s grows while driving)")
+    right = f"t_offset -2.6 in the outermost lane {st['n']}"
+    if st["free"]:
+        k = st["free"][0]
+        return (f"Road works on {where}: close lane {k}, which the ego and the other agents do not use ahead: a taper of 6-7 "
+                f"'cone' objects in lane {k} (spacing 4-6 m, t_offset from -1.4 to +1.4, first cone at s={_s(st, 70)}, last at "
+                f"s={_s(st, 105)}), a 'barrier' (heading_deg 90) in lane {k} at s={_s(st, 112)}, a 'traffic_sign' with sign_type "
+                f"road_works at s={_s(st, 45)} and a 'traffic_sign' speed_limit with sign_value 30 at s={_s(st, 38)} ({right}), "
+                "all before the first cone; optionally a 'parked_truck' beside the zone (t_offset -3.4). Change nothing else.")
+    ex = st["exit"]
+    if ex and ex["free"]:
+        k = ex["free"][0]
+        s1, s2 = 30, 70
+        return (f"Road works on the ego's exit arm {ex['arm']} (outbound, lane {k} is free; the ego leaves in lane {ex['ego_lane']}; "
+                f"there s is the distance from the junction and grows while driving): a taper of 6-7 'cone' objects in lane {k} "
+                f"(road {ex['arm']}, direction outbound, spacing 5 m, t_offset -1.4 .. +1.4, s={s1 + 20}..{s2 + 20}), a 'traffic_sign' "
+                f"road_works at s={s1 - 6} and a 'traffic_sign' speed_limit with sign_value 30 at s={s1 - 12} (t_offset -2.6 in the "
+                f"outermost outbound lane), a 'barrier' at the end. The ego's own approach stays free; change nothing else.")
+    return (f"Road works at the roadside of {where}: every lane is used by the ego or another agent, so do not close one. "
+            f"Mark the zone beside the road instead: a 'traffic_sign' road_works at s={_s(st, 45)} and a 'traffic_sign' "
+            f"speed_limit (sign_value 30) at s={_s(st, 38)} ({right}), a group of 4-5 'cone' objects on the shoulder (outermost "
+            f"lane {st['n']}, t_offset -2.4, spacing 3 m, from s={_s(st, 60)}), a 'parked_truck' (t_offset -3.4) at s={_s(st, 85)}.")
+
+
 def environment_levers(d: dict, static_objects: bool) -> list[tuple[str, str]]:
     """Scenario-specific candidate environment changes (id, text) for the road, signs, static objects and setting."""
     road, ego, L = d["road"], _ego(d), []
@@ -188,17 +287,24 @@ def environment_levers(d: dict, static_objects: bool) -> list[tuple[str, str]]:
                   f"{80 if road['speed_limit_kph'] > 90 else 120} km/h."))
         L.append(("median_shoulder", "Add a median (median_width 3 m) or widen/remove the shoulder (shoulder_width 0.5 m)."))
     if static_objects:
-        L.append(("road_works", "Road works: a row of 'cone' static objects closing one lane ahead of the ego, a "
-                  "'construction_sign' (sign_type road_works) and a 'traffic_sign' speed_limit with sign_value 30 "
-                  "placed before the closure (static_objects/-)."))
-        L.append(("parked_cars", "Parked vehicles: two 'parked_car' static objects on the right edge (lane of the ego's "
-                  "direction, t_offset about -1.2 m) ahead of the ego."))
-        L.append(("barrier", "A 'barrier' static object narrowing the carriageway ahead of the ego plus a "
-                  "'traffic_sign' of sign_type pedestrian_crossing / yield / stop in front of it."))
-        L.append(("sign_only", "Traffic signs: a 'traffic_sign' speed_limit (sign_value 30) and a 'traffic_sign' "
-                  "pedestrian_crossing before the conflict area."))
-        L.append(("setting", "Change environment.setting (e.g. urban -> industrial or suburban) together with matching "
-                  "static objects (poles, bollards, parked trucks)."))
+        st = _site(d)
+        n, side = st["n"], f"t_offset -2.6 in the outermost lane {st['n']}"
+        on = (f"arm {st['arm']} {st['direction']}" if st["junction"] else f"the {st['direction']} lanes") + \
+            f" (ego: lane {st['ego_lane']} of {n}, s={st['s0']:.0f}; s " + \
+            ("shrinks toward the stop line" if st["sgn"] < 0 else "grows while driving") + ")"
+        L.append(("road_works", _roadworks_text(d)))
+        L.append(("parked_cars", f"Parked vehicles beside the road on {on}: two 'parked_car' static objects in the outermost "
+                  f"lane {n} with t_offset about -3.2 (they stand next to the lane, not in it) at s={_s(st, 55)} and "
+                  f"s={_s(st, 68)}. Keep the ego's lane free."))
+        L.append(("barrier", f"A 'barrier' static object (heading_deg 90) at the right edge of the outermost lane {n} on {on}, "
+                  f"t_offset -2.2, s={_s(st, 50)}, plus a 'traffic_sign' of sign_type pedestrian_crossing (or yield / stop) "
+                  f"at s={_s(st, 38)} ({side})."))
+        L.append(("sign_only", f"Traffic signs on {on}: a 'traffic_sign' speed_limit (sign_value 30) at s={_s(st, 40)} and "
+                  f"a 'traffic_sign' pedestrian_crossing at s={_s(st, 25)} ({side}), both before the conflict area."))
+        L.append(("setting", f"Change environment.setting from {d['environment'].get('setting', 'urban')} to another one "
+                  "(urban, suburban, rural, highway, industrial) that the road can plausibly be in, together with 2-3 "
+                  "matching static objects beside the road (poles, bollards, a parked_truck for industrial; t_offset "
+                  "-3.4 or beyond in the outermost lane)."))
     return L
 
 
@@ -214,13 +320,22 @@ _B_TERMS = {"day": ["day", "daylight", "daytime", "morning", "noon", "midday", "
 _S_TERMS = {"dry": ["dry"], "wet": ["wet", "damp", "slippery", "puddle", "rain-soaked", "glossy"],
             "snow": ["snow", "snow-covered", "slippery"], "ice": ["ice", "icy", "frozen", "black ice", "slippery"]}
 _OBJ_TERMS = {"cone": ["cone"], "barrier": ["barrier", "barricade", "guardrail"], "parked_car": ["parked"],
-              "parked_truck": ["parked", "truck"], "pole": ["pole", "post", "lamp"], "bollard": ["bollard"],
-              "construction_sign": ["construction", "road works", "roadworks", "road work", "road-works"],
-              "traffic_sign": ["sign"]}
+              "parked_truck": ["parked", "truck", "lorry"], "pole": ["pole", "post", "lamp"], "bollard": ["bollard"],
+              "construction_sign": ["construction", "road works", "roadworks", "road work", "road-works", "warning board",
+                                    "diversion"], "traffic_sign": ["sign"]}
+_SIGN_PLAIN = {"speed_limit": "speed-limit sign", "stop": "stop sign", "yield": "yield sign", "no_entry": "no-entry sign",
+               "pedestrian_crossing": "pedestrian-crossing sign", "road_works": "road-works sign"}
+_OBJ_PLAIN = {"cone": "traffic cones", "barrier": "a barrier", "parked_car": "a parked car", "parked_truck": "a parked truck",
+              "pole": "a pole", "bollard": "bollards", "construction_sign": "a construction warning board",
+              "traffic_sign": "a traffic sign"}
 _SIGN_TERMS = {"speed_limit": ["speed limit", "speed-limit", "speed sign", "km/h"], "stop": ["stop sign", "stop"],
                "yield": ["yield", "give way"], "no_entry": ["no entry", "no-entry", "do not enter"],
                "pedestrian_crossing": ["pedestrian crossing", "crosswalk", "zebra", "pedestrian"],
                "road_works": ["road works", "roadworks", "road work", "road-works", "construction"]}
+_SETTING_TERMS = {"urban": ["urban", "city", "downtown", "town", "inner-city"], "suburban": ["suburb", "residential", "outskirts"],
+                  "rural": ["rural", "country", "countryside", "farm", "field", "village"],
+                  "highway": ["highway", "motorway", "freeway", "expressway"],
+                  "industrial": ["industrial", "warehouse", "factory", "logistics", "depot", "commercial"]}
 _CAT_TERMS = {"car": ["car", "vehicle", "sedan"], "suv": ["suv", "vehicle", "car"], "van": ["van", "vehicle"],
               "truck": ["truck", "lorry", "heavy vehicle"], "bus": ["bus"], "motorcycle": ["motorcycle", "motorbike", "rider"],
               "bicycle": ["bicycle", "cyclist", "bike"], "pedestrian": ["pedestrian", "walker", "person"]}
@@ -295,7 +410,7 @@ def expected_attributes(parent: dict, child: dict, dims, changes: list[Change] |
             if m and c.op != "remove":
                 o = child["static_objects"][int(m.group(1))]
                 kind, st = o["kind"], o.get("sign_type")
-                if kind in ("traffic_sign", "construction_sign") and st:
+                if kind == "traffic_sign" and st:
                     key = f"sign:{st}:{o.get('sign_value')}"
                     if key not in seen:
                         seen.add(key)
@@ -303,18 +418,19 @@ def expected_attributes(parent: dict, child: dict, dims, changes: list[Change] |
                         if o.get("sign_value") is not None:
                             v = o["sign_value"]
                             terms = [str(int(v)) if isinstance(v, (int, float)) and float(v).is_integer() else str(v)]
-                        out.append({"attr": f"sign {st}{'' if o.get('sign_value') is None else ' ' + str(o['sign_value'])}",
+                        v = o.get("sign_value")
+                        out.append({"attr": f"a {v:g} km/h speed-limit sign" if v is not None else f"a {_SIGN_PLAIN.get(st, st.replace('_', ' ') + ' sign')}",
                                     "any": terms})
-                        if o.get("sign_value") is not None:
-                            out.append({"attr": f"sign type {st}", "any": _SIGN_TERMS.get(st, [st]) + ["sign"]})
+                        if v is not None:
+                            out.append({"attr": "a speed-limit sign", "any": _SIGN_TERMS.get(st, [st]) + ["sign"]})
                 elif kind not in seen:
                     seen.add(kind)
-                    out.append({"attr": f"object {kind}", "any": _OBJ_TERMS.get(kind, [kind.replace("_", " ")])})
+                    out.append({"attr": _OBJ_PLAIN.get(kind, kind.replace("_", " ")), "any": _OBJ_TERMS.get(kind, [kind.replace("_", " ")])})
             elif m and c.op == "remove":
                 continue
         if "/environment/setting" in paths:
             s = ce.get("setting")
-            out.append({"attr": f"setting -> {s}", "any": [str(s)]})
+            out.append({"attr": f"setting -> {s}", "any": _SETTING_TERMS.get(s, [str(s)])})
         road_seen: set[str] = set()
         for c in ch:
             if not c.path.startswith("/road"):
@@ -333,8 +449,8 @@ def expected_attributes(parent: dict, child: dict, dims, changes: list[Change] |
 
 def check_description(text: str, attrs: list[dict]) -> list[str]:
     """Attributes whose terms do not appear in the description (case-insensitive substring match)."""
-    low = text.lower()
-    return [a["attr"] for a in attrs if a["any"] and not _has(low, [t.lower() for t in a["any"]])]
+    low = text.lower().replace("_", " ")                  # "road_works sign" counts as "road works sign"
+    return [a["attr"] for a in attrs if a["any"] and not _has(low, [t.lower().replace("_", " ") for t in a["any"]])]
 
 
 def summarise(changes: list[Change], max_items: int = 40) -> list[str]:

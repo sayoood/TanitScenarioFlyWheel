@@ -288,7 +288,10 @@ def downstream(ctx: Ctx, tsir: dict, rep):
     from tsf.sim.render2d import render_video
     sim, log = rep._sim, rep._log
     ctx.stage("simulate", "running")
-    (wd / "scene.json").write_text(json.dumps(scene(sim, log)))
+    sc_doc = scene(sim, log)
+    if log.static:                         # signs, cones, barriers, parked vehicles: boxes for the viewer (Scene.static)
+        sc_doc["static"] = [b.to_dict() for b in log.static]
+    (wd / "scene.json").write_text(json.dumps(sc_doc))
     t0 = time.perf_counter()
     if opt.get("video", True):
         render_video(sim, log, wd / "bev.mp4", title=sim.sc.meta.title[:70])

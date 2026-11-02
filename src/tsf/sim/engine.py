@@ -15,6 +15,7 @@ import numpy as np
 from tsf.compile.mapping import odr_position
 from tsf.ir.scenario import Junction, Scenario
 from tsf.sim.odr import Lane, LaneKey, OdrMap
+from tsf.sim.static import StaticBody, build_static
 
 TURN_THRESH = 0.6  # rad heading change classifying a junction lane as left/right
 
@@ -209,6 +210,7 @@ class SimLog:
     signals: dict[int, list[str]]     # arm -> state per tick
     events: list[dict] = field(default_factory=list)
     metrics: dict = field(default_factory=dict)
+    static: list[StaticBody] = field(default_factory=list)   # fixed obstacles/signs of the environment
 
     def idx(self, actor: str) -> int:
         return self.ids.index(actor)
@@ -252,13 +254,15 @@ class TanitSim:
             else:
                 keys, rem = build_route(m, key, list(a.route), horizon)
                 ag = Agent(a.id, a.role, a.category, (l, w, h), Path(m, keys), prog, a.initial_speed, rem,
-                           d=a.initial.t_offset, d_off=a.initial.t_offset, v_des=max(a.initial_speed, 0.1))
+                           d=a.initial.t_offset, d_off=a.initial.t_offset,
+                           v_des=max(a.initial_speed, 0.1) if a.initial_speed > 0 else 0.0)   # at rest: stays at rest
                 ag.turns_all = list(a.route)
                 ag.headway = a.headway or 1.5
                 if a.role == "ego" and ego_policy is not None:
                     ag.external = True          # integrated kinematically from here on: start at its scenario pose
                     ag.x, ag.y, ag.yaw = ag.path.pose(ag.p, ag.d)
             self.agents[a.id] = ag
+        self.static = build_static(sc, m)               # stationary obstacles: signs, cones, barriers, parked vehicles
         self.actions = {act.id: act for act in sc.actions}
         self.started: dict[str, float] = {}
         self._lc_wait: dict[str, float] = {}           # safe_gap lane changes waiting for a gap
@@ -394,6 +398,14 @@ class TanitSim:
                 closing = max(0.0, o.v - ag.v)
                 if free < 2.0 + 0.5 * o.v or closing ** 2 / (2 * max(free - 2.0, 0.1)) > 3.0:
                     return False
+        for b in self.static:                                  # standing obstacles in the target lane
+            j = int(np.hypot(ln.xy[:, 0] - b.x, ln.xy[:, 1] - b.y).argmin())
+            half_l, half_w = b.extent(float(ln.hdg[j]))
+            if math.hypot(ln.xy[j, 0] - b.x, ln.xy[j, 1] - b.y) > 1.6 + half_w or math.hypot(b.x - ag.x, b.y - ag.y) > 80:
+                continue
+            gap = float(ln.cum[j]) - p0
+            if gap >= 0 and gap - ag.lwh[0] / 2 - half_l < 2.0 + 0.3 * ag.v:
+                return False
         return True
 
     def _begin_lane_change(self, ag: Agent, direction: str, n: int, T: float, act_id: str):
@@ -478,6 +490,19 @@ class TanitSim:
             if gap < best:
                 ov = o.v * math.cos(wrap(o.yaw - ag.yaw))
                 best, bv, bid = gap, max(ov, 0.0), o.id
+        for b in self.static:                               # standing obstacles (cones, barriers, parked vehicles, ...)
+            if math.hypot(b.x - ag.x, b.y - ag.y) > horizon + 20:
+                continue
+            pr = ag.path.project(b.x, b.y, ag.p, horizon)
+            if pr is None or pr[0] <= ag.p:
+                continue
+            po, lat = pr
+            half_l, half_w = b.extent(ag.path.pose(po)[2])
+            if abs(lat - ag.d) > (ag.lwh[1] / 2 + half_w) + 0.25:
+                continue
+            gap = po - ag.p - ag.lwh[0] / 2 - half_l
+            if gap < best:
+                best, bv, bid = gap, 0.0, b.id
         return best, bv, bid
 
     def _must_stop(self, ag: Agent) -> float | None:
@@ -583,10 +608,12 @@ class TanitSim:
                 continue
             gap, vl, lid = self._leader_gap(ag)
             T = ag.time_gap if ag.follow_target and lid == ag.follow_target else ag.headway
-            acc = self._idm(ag, gap, vl, T, self.agents[lid].a if lid else None)
+            acc = self._idm(ag, gap, vl, T, self.agents[lid].a if lid in self.agents else None)
             sd = self._must_stop(ag)
             if sd is not None:  # virtual standing obstacle 1 m past the line; IDM s0=2 m -> stop ~1 m before it
                 acc = min(acc, self._idm(ag, max(sd + 1.0, 0.05), 0.0, 1.0))
+            if ag.v_des < 0.05:                       # wants to stand still (parked / stopped): never accelerates
+                acc = min(acc, 0.0)
             if ag.braking is not None:
                 acc = -ag.braking
             acc = max(min(acc, ag.a_max), -9.0)
@@ -674,7 +701,8 @@ class TanitSim:
             if i < n - 1:
                 self.step()
         log = SimLog(ts, ids, S, lanes, np.array([self.agents[a].lwh for a in ids]),
-                     [self.agents[a].category for a in ids], [self.agents[a].role for a in ids], sig, self.events)
+                     [self.agents[a].category for a in ids], [self.agents[a].role for a in ids], sig, self.events,
+                     static=list(self.static))
         log.metrics = metrics(self, log)
         return log
 
@@ -700,6 +728,16 @@ def metrics(sim: TanitSim, log: SimLog) -> dict:
             ttc = sim._ttc(a, b, horizon=5.0, step=0.1)
             if ttc < min_ttc:
                 min_ttc, min_ttc_actor = ttc, log.ids[j]
+        for sb in getattr(sim, "static", ()):             # fixed obstacles: stationary boxes
+            if obb_overlap(A, sb.corners()):
+                collisions.append({"t": float(log.t[i]), "with": sb.id})
+            if math.hypot(sb.x - ex, sb.y - ey) > 5.0 * max(ev, 1.0) + sb.lwh[0] + log.lwh[e, 0] + 5.0:
+                continue
+            a = Agent("e", "", "", tuple(log.lwh[e]), None, 0, ev, [], x=ex, y=ey, yaw=eyaw)
+            b = Agent("o", "", "", sb.lwh, None, 0, 0.0, [], x=sb.x, y=sb.y, yaw=sb.yaw)
+            ttc = sim._ttc(a, b, horizon=5.0, step=0.1)
+            if ttc < min_ttc:
+                min_ttc, min_ttc_actor = ttc, sb.id
     acc = S[:, e, 4]
     jerk = np.diff(acc) / sim.dt if n > 1 else np.zeros(1)
     lane_seq = [ln[e] for ln in log.lanes]

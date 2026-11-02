@@ -16,6 +16,9 @@ _CAT = {"car": "car", "suv": "car", "van": "van", "truck": "truck", "bus": "bus"
         "bicycle": "bicycle", "pedestrian": "pedestrian"}
 
 
+_PARKED = {"parked_car": "car", "parked_truck": "truck"}
+
+
 def _q(v: float, unit: str) -> str:
     return f"{v:g}{unit}"
 
@@ -93,11 +96,32 @@ def emit(sc: Scenario, xodr_name: str | None = None) -> str:
         L.append(f"        keep(it.bbox.length == {_q(l, 'm')}) keep(it.bbox.width == {_q(w, 'm')})"
                  f" keep(it.bbox.height == {_q(h, 'm')})")
         L.append(f'        keep(it.color == "{a.color}")')
+    for o in sc.static_objects:
+        l, w, h = o.dims()
+        if o.kind in _PARKED:
+            L.append(f"    {o.id}: vehicle with:")
+            L.append(f"        keep(it.vehicle_category == vehicle_category!{_PARKED[o.kind]})")
+        else:
+            L.append(f"    {o.id}: static_object with:")
+            L.append(f"        keep(it.object_kind == static_object_kind!{o.kind})")
+            if o.sign_type:
+                L.append(f"        keep(it.sign_type == sign_type!{o.sign_type.rstrip('_')})")
+            if o.sign_value is not None:
+                L.append(f"        keep(it.sign_value == {_q(o.sign_value, 'kph')})")
+        L.append(f"        keep(it.bbox.length == {_q(l, 'm')}) keep(it.bbox.width == {_q(w, 'm')})"
+                 f" keep(it.bbox.height == {_q(h, 'm')})")
     events = sorted({f"{x.start.action_id}_{'started' if x.start.on == 'start' else 'done'}"
                      for x in sc.actions if x.start.kind == "after_action"})
     for ev in events:
         L.append(f"    event {ev}")
     L += ["", f"    do parallel(duration: {_q(sc.duration, 's')}, overlap: any):"]
+    for o in sc.static_objects:                      # stationary: placed once, nothing else to do
+        rid, lid, s = odr_position(sc, o.position)
+        head = o.heading_deg + (180.0 if o.kind in ("traffic_sign", "construction_sign") else 0.0)
+        L.append(f"        {o.id}_story: serial:")
+        L.append(f"            {o.id}.place(road: {rid}, lane: {lid}, s: {_q(round(s, 2), 'm')}, "
+                 f"offset: {_q(o.position.t_offset, 'm')}, heading: {_q(round(head % 360.0, 2), 'deg')}"
+                 f"{', speed: 0mps' if o.kind in _PARKED else ''})")
     for a in sc.actors:
         rid, lid, s = odr_position(sc, a.initial)
         L.append(f"        {a.id}_story: serial:")

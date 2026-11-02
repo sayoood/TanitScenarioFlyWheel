@@ -17,12 +17,20 @@ from pathlib import Path
 import numpy as np
 from lxml import etree
 
-from tsf.ir.scenario import Junction, LinearRoad, Scenario
+from tsf.compile.mapping import odr_position
+from tsf.ir.scenario import SIGN_FACING_KINDS, Junction, LinearRoad, Scenario, StaticObject
 from tsf.sim.odr import Geometry
 
 JUNCTION_ID = 1000
 SIGNAL_ID_BASE = 5000  # signal id of arm i = SIGNAL_ID_BASE + i
 CONTROLLER_ID = 9000
+
+# static objects (TSIR `static_objects`): <object> type/subtype per kind (OpenDRIVE 1.8 has no cone and no truck type)
+OBJECT_TYPE = {"cone": ("obstacle", "cone"), "barrier": ("barrier", "none"), "parked_car": ("car", "parked"),
+               "parked_truck": ("van", "truck"), "pole": ("pole", "none"), "bollard": ("pole", "bollard")}
+# <signal country="DE"> StVO sign numbers (VzKat); construction signs are written as road-works signs
+SIGN_CODE = {"speed_limit": "274", "stop": "206", "yield": "205", "no_entry": "267", "pedestrian_crossing": "350",
+             "road_works": "123"}
 
 
 def turn_target(approaches, i: int, turn: str) -> int | None:
@@ -140,6 +148,57 @@ def _marks(n: int) -> list[str]:
     return ["broken"] * (n - 1) + ["solid"] if n else []
 
 
+# ----------------------------------------------------------------------------- static objects and signs
+def _lane_width(sc: Scenario, rid: str, lid: int) -> float:
+    road = sc.road
+    if isinstance(road, LinearRoad):
+        return road.forward.lane_width if lid < 0 else road.backward.lane_width
+    ap = road.approaches[int(rid)]
+    return ap.inbound.lane_width if lid > 0 else ap.outbound.lane_width
+
+
+def static_road_pose(sc: Scenario, o: StaticObject) -> tuple[str, int, float, float, float]:
+    """(road id, lane id, road s, road t, heading relative to the road reference line) of a static object.
+    Lane centres sit half a lane width per lane from the centre line; t_offset is + = left of the driving direction,
+    which is the -t direction on left lanes (they drive against the reference line)."""
+    rid, lid, s = odr_position(sc, o.position)
+    centre = math.copysign((abs(lid) - 0.5) * _lane_width(sc, rid, lid), lid)
+    t = centre + o.position.t_offset * (1.0 if lid < 0 else -1.0)
+    hdg = math.radians(o.heading_deg) + (math.pi if lid > 0 else 0.0)
+    return rid, lid, float(s), float(t), math.remainder(hdg, 2 * math.pi)
+
+
+def _statics(r, sc: Scenario, rid: str):
+    """<objects> (cones, barriers, parked vehicles, poles, bollards) and static <signals> (signs) of road `rid`."""
+    objs, sigs = [], []
+    for o in sc.static_objects:
+        pose = static_road_pose(sc, o)
+        if pose[0] == rid:
+            (sigs if o.kind in SIGN_FACING_KINDS else objs).append((o, pose))
+    if objs:
+        ob = _sub(r, "objects")
+        for o, (_, lid, s, t, hdg) in objs:
+            l, w, h = o.dims()
+            typ, sub = OBJECT_TYPE[o.kind]
+            _sub(ob, "object", id=o.id, name=o.id, type=typ, subtype=sub, dynamic="no", orientation="none", s=s, t=t,
+                 zOffset=0.0, hdg=hdg, length=l, width=w, height=h)
+    if sigs:
+        sg = r.find("signals")
+        if sg is None:
+            sg = _sub(r, "signals")
+        for o, (_, lid, s, t, hdg) in sigs:
+            l, w, h = o.dims()
+            sign = "road_works" if o.kind == "construction_sign" else o.sign_type
+            panel = min(w, h) if o.kind == "traffic_sign" else 0.6 * h
+            at = dict(id=o.id, name=o.id, s=s, t=t, dynamic="no", orientation="+" if lid < 0 else "-", zOffset=h - panel,
+                      country="DE", type=SIGN_CODE[sign], subtype="-1", height=panel, width=w)
+            if abs(o.heading_deg) > 1e-9:
+                at["hOffset"] = math.radians(o.heading_deg)
+            if sign == "speed_limit":
+                at.update(subtype=f"{o.sign_value:g}", value=o.sign_value, unit="km/h")
+            _sub(sg, "signal", **at)
+
+
 # ----------------------------------------------------------------------------- linear road
 def _linear(sc: Scenario) -> etree._Element:
     road: LinearRoad = sc.road
@@ -167,6 +226,7 @@ def _linear(sc: Scenario) -> etree._Element:
     if not left:  # one-way carriageway: leftmost forward lane gets a solid inner edge via centre lane mark
         pass
     _lanes_block(r, left, right)
+    _statics(r, sc, "0")
     return root
 
 
@@ -215,8 +275,11 @@ def _junction(sc: Scenario) -> etree._Element:
         left = [(ap.inbound.lane_width, m, None, None) for m in _marks(ap.inbound.driving_lanes)]
         right = [(ap.outbound.lane_width, m, None, None) for m in _marks(ap.outbound.driving_lanes)]
         _lanes_block(r, left, right)
+        _statics(r, sc, str(i))
         if J.signalized:
-            sg = _sub(r, "signals")
+            sg = r.find("signals")
+            if sg is None:
+                sg = _sub(r, "signals")
             _sub(sg, "signal", s=0.5, t=ap.inbound.driving_lanes * ap.inbound.lane_width + 1.0,
                  id=str(SIGNAL_ID_BASE + i), name=f"tl_arm{i}", dynamic="yes", orientation="-", zOffset=2.5,
                  country="DE", type="1000001", subtype="-1", height=0.9, width=0.35)

@@ -8,6 +8,7 @@ compilers do the rest. Units are SI (m, s, m/s, rad) unless a field name says ot
 """
 from __future__ import annotations
 
+import math
 from enum import Enum
 from typing import Annotated, Literal, Union
 
@@ -45,6 +46,9 @@ class Environment(_M):
     cloud_cover: float = Field(0.1, ge=0, le=1)
     road_surface: RoadSurface = RoadSurface.dry
     sun_azimuth_deg: float | None = Field(None, description="override; else derived from time_of_day")
+    setting: Literal["urban", "suburban", "rural", "highway", "industrial"] = Field(
+        "urban", description="general surroundings of the road (buildings, vegetation, street furniture); drives "
+        "the scene captions of the sensor renderer, not the simulation")
 
 
 # --------------------------------------------------------------------------- road network
@@ -152,6 +156,76 @@ class Actor(_M):
 
     def dims(self) -> tuple[float, float, float]:
         return self.dimensions or DEFAULT_DIMS[self.category]
+
+
+# --------------------------------------------------------------------------- static environment
+class StaticObjectKind(str, Enum):
+    cone = "cone"
+    barrier = "barrier"
+    parked_car = "parked_car"
+    parked_truck = "parked_truck"
+    traffic_sign = "traffic_sign"
+    pole = "pole"
+    bollard = "bollard"
+    construction_sign = "construction_sign"
+
+
+class SignType(str, Enum):
+    speed_limit = "speed_limit"
+    stop = "stop"
+    yield_ = "yield"
+    no_entry = "no_entry"
+    pedestrian_crossing = "pedestrian_crossing"
+    road_works = "road_works"
+
+
+# length (along the object's heading; for signs the panel thickness), width, height (for signs: top of the panel)
+DEFAULT_STATIC_DIMS: dict[str, tuple[float, float, float]] = {
+    "cone": (0.4, 0.4, 0.75), "barrier": (2.0, 0.6, 0.9), "parked_car": (4.6, 1.85, 1.5),
+    "parked_truck": (12.0, 2.55, 3.6), "traffic_sign": (0.12, 0.75, 2.6), "pole": (0.3, 0.3, 6.0),
+    "bollard": (0.2, 0.2, 0.9), "construction_sign": (0.15, 1.2, 1.5),
+}
+SIGN_FACING_KINDS = ("traffic_sign", "construction_sign")   # panels: heading 0 faces the approaching traffic
+
+
+class StaticObject(_M):
+    """A fixed object of the environment: a traffic sign, cone, barrier, bollard, pole or parked vehicle.
+
+    `position` is lane-relative like an actor's; roadside objects use the outermost lane of the direction they
+    belong to and a `t_offset` beyond the lane edge (the lane centre is half a lane width from the edge, so a
+    sign 0.8 m outside a 3.5 m lane has t_offset -2.55 on the right and +2.55 on the left)."""
+    id: str = Field(..., pattern=r"^[A-Za-z][A-Za-z0-9_]*$", description="unique across actors and static objects")
+    kind: StaticObjectKind
+    position: LanePosition
+    heading_deg: float = Field(0.0, description="CCW rotation relative to the lane's driving direction; 0 = long "
+                               "axis along the driving direction. For signs and construction signs 0 = the panel "
+                               "faces the traffic approaching in this lane (its front normal points against the "
+                               "driving direction)")
+    dimensions: tuple[float, float, float] | None = Field(
+        None, description="l, w, h in m; default per kind (DEFAULT_STATIC_DIMS). l is along the heading (panel "
+        "thickness for signs), h is the full height (top of the panel for signs)")
+    sign_type: SignType | None = Field(None, description="required for kind traffic_sign, forbidden otherwise")
+    sign_value: float | None = Field(None, gt=0, description="speed_limit: the limit in km/h (required there); "
+                                     "forbidden for other sign types")
+
+    def dims(self) -> tuple[float, float, float]:
+        return self.dimensions or DEFAULT_STATIC_DIMS[self.kind]
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "StaticObject":
+        if self.dimensions is not None and not all(math.isfinite(v) and v > 0 for v in self.dimensions):
+            raise ValueError(f"static object {self.id}: dimensions must be positive, got {tuple(self.dimensions)}")
+        if self.kind == "traffic_sign":
+            if self.sign_type is None:
+                raise ValueError(f"static object {self.id}: kind traffic_sign needs a sign_type "
+                                 f"({', '.join(t.value for t in SignType)})")
+            if (self.sign_type == "speed_limit") != (self.sign_value is not None):
+                raise ValueError(f"static object {self.id}: sign_value (km/h) is required for sign_type speed_limit "
+                                 "and not allowed for other sign types")
+        elif self.sign_type is not None or self.sign_value is not None:
+            raise ValueError(f"static object {self.id}: sign_type/sign_value belong to kind traffic_sign only "
+                             f"(a road-works sign is kind traffic_sign with sign_type road_works); kind is {self.kind}")
+        return self
 
 
 # --------------------------------------------------------------------------- triggers & actions
@@ -309,6 +383,9 @@ class Scenario(_M):
     environment: Environment = Field(default_factory=Environment)
     road: RoadNetwork
     actors: list[Actor] = Field(..., min_length=1)
+    static_objects: list[StaticObject] = Field(
+        default_factory=list, description="signs, cones, barriers, bollards, poles and parked vehicles of the "
+        "environment: stationary obstacles for the simulation, objects and signs in the maps and sensor controls")
     actions: list[Action] = Field(default_factory=list)
     assertions: list[Assertion] = Field(default_factory=list)
     parameters: list[ParameterRange] = Field(default_factory=list)
@@ -342,11 +419,50 @@ class Scenario(_M):
             for a in self.actors:
                 if a.initial.road >= n:
                     raise ValueError(f"actor {a.id} on approach {a.initial.road}, junction has {n}")
+        seen = set(ids)
+        for o in self.static_objects:
+            if o.id in seen:
+                raise ValueError(f"static object id '{o.id}' is not unique (ids must differ across actors and "
+                                 "static objects)")
+            seen.add(o.id)
+            _check_static_position(self.road, o)
         return self
 
     @property
     def ego(self) -> Actor:
         return next(a for a in self.actors if a.role == "ego")
+
+
+def _check_static_position(road, o: StaticObject) -> None:
+    """A static object must sit on an existing lane inside the road, so that every compiler and TanitSim can resolve
+    its LanePosition (positions on imported OpenDRIVE maps are checked when the map is loaded)."""
+    p = o.position
+    if isinstance(road, LinearRoad):
+        if p.road != 0:
+            raise ValueError(f"static object {o.id}: a linear road has only road 0, got {p.road}")
+        if p.direction in ("inbound", "outbound"):
+            raise ValueError(f"static object {o.id}: direction '{p.direction}' belongs to junction arms; use "
+                             "'forward' or 'backward' on a linear road")
+        cfg = road.forward if p.direction == "forward" else road.backward
+        if cfg is None:
+            raise ValueError(f"static object {o.id}: this one-way road has no backward lanes")
+        length = sum(seg.length for seg in road.segments)
+    elif isinstance(road, Junction):
+        if p.road >= len(road.approaches):
+            raise ValueError(f"static object {o.id} on approach {p.road}, junction has {len(road.approaches)}")
+        if p.direction in ("forward", "backward"):
+            raise ValueError(f"static object {o.id}: direction '{p.direction}' belongs to linear roads; use "
+                             "'inbound' (toward the junction) or 'outbound' on a junction arm")
+        ap = road.approaches[p.road]
+        cfg = ap.inbound if p.direction == "inbound" else ap.outbound
+        length = ap.length
+    else:
+        return
+    if p.lane > cfg.driving_lanes:
+        raise ValueError(f"static object {o.id}: lane {p.lane} does not exist ({p.direction} has {cfg.driving_lanes} "
+                         "lane(s); roadside objects use the outermost lane plus a t_offset beyond its edge)")
+    if not 0.0 <= p.s <= length:
+        raise ValueError(f"static object {o.id}: s={p.s:g} lies outside the road (0..{length:g} m)")
 
 
 def json_schema() -> dict:

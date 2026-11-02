@@ -6,6 +6,7 @@ Signal plans become a TrafficSignalController in the RoadNetwork.
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from scenariogeneration import xosc
@@ -32,6 +33,40 @@ def _entity(a):
     veh.add_property("color", a.color)
     veh.add_property("tsf_category", a.category)
     return veh
+
+
+# static objects: parked vehicles are stationary Vehicles, everything else a MiscObject
+_MISC = {"cone": "obstacle", "barrier": "barrier", "pole": "pole", "bollard": "pole", "traffic_sign": "pole",
+         "construction_sign": "obstacle"}
+_PARKED = {"parked_car": "car", "parked_truck": "truck"}
+_MISC_MASS = {"cone": 1.0, "barrier": 40.0, "pole": 150.0, "bollard": 15.0, "traffic_sign": 20.0,
+              "construction_sign": 15.0}
+
+
+def _static_entity(o):
+    l, w, h = o.dims()
+    bb = xosc.BoundingBox(w, l, h, 0.0, 0.0, h / 2)
+    if o.kind in _PARKED:
+        wb = min(3.0, l * 0.6)
+        veh = xosc.Vehicle(o.id, getattr(xosc.VehicleCategory, _PARKED[o.kind]), bb,
+                           xosc.Axle(0.5, 0.7, w * 0.85, wb, 0.35), xosc.Axle(0.0, 0.7, w * 0.85, 0.0, 0.35),
+                           max_speed=70, max_acceleration=10, max_deceleration=10)
+        veh.add_property("tsf_category", _PARKED[o.kind])
+        veh.add_property("tsf_static", "parked")
+        return veh
+    obj = xosc.MiscObject(o.id, _MISC_MASS[o.kind], getattr(xosc.MiscObjectCategory, _MISC[o.kind]), bb)
+    obj.add_property("tsf_static", o.kind)
+    if o.sign_type:
+        obj.add_property("tsf_sign_type", o.sign_type)
+    if o.sign_value is not None:
+        obj.add_property("tsf_sign_value_kph", f"{o.sign_value:g}")
+    return obj
+
+
+def _static_orientation(o):
+    """Heading relative to the lane; panels face the approaching traffic (heading 0 = against the driving direction)."""
+    h = math.radians(o.heading_deg) + (math.pi if o.kind in ("traffic_sign", "construction_sign") else 0.0)
+    return xosc.Orientation(h=math.remainder(h, 2 * math.pi), reference=xosc.ReferenceContext.relative) if h else         xosc.Orientation()
 
 
 def _speed(v, rate):
@@ -128,6 +163,14 @@ def build(sc: Scenario, xodr_name: str) -> xosc.Scenario:
         init.add_init_action(a.id, xosc.TeleportAction(xosc.LanePosition(s, a.initial.t_offset, lid, rid)))
         init.add_init_action(a.id, xosc.AbsoluteSpeedAction(
             a.initial_speed, xosc.TransitionDynamics(xosc.DynamicsShapes.step, xosc.DynamicsDimension.time, 0)))
+    for o in sc.static_objects:                      # stationary: placed once, no maneuvers
+        entities.add_scenario_object(o.id, _static_entity(o))
+        rid, lid, s = odr_position(sc, o.position)
+        init.add_init_action(o.id, xosc.TeleportAction(
+            xosc.LanePosition(s, o.position.t_offset, lid, rid, _static_orientation(o))))
+        if o.kind in _PARKED:
+            init.add_init_action(o.id, xosc.AbsoluteSpeedAction(
+                0.0, xosc.TransitionDynamics(xosc.DynamicsShapes.step, xosc.DynamicsDimension.time, 0)))
     act = xosc.Act("tsf_act", xosc.ValueTrigger("act_start", 0, xosc.ConditionEdge.none,
                                                 xosc.SimulationTimeCondition(0, xosc.Rule.greaterThan)))
     for a in sc.actors:

@@ -32,9 +32,9 @@ def _lighting(env: dict, setting: str | None, junction: bool) -> str:
 
 
 def _env_type(d: dict) -> str:
+    """IMDAD environment_type: a work zone (cones, construction board or road-works sign) wins over the setting."""
     objs = d.get("static_objects") or []
-    if any(o.get("kind") == "cone" or o.get("sign_type") == "road_works" or o.get("kind") == "construction_sign"
-           for o in objs):
+    if any(o.get("kind") in ("cone", "construction_sign") or o.get("sign_type") == "road_works" for o in objs):
         return "construction_zone"
     st = d["environment"].get("setting")
     if st in ("highway", "rural", "suburban", "urban"):
@@ -45,6 +45,20 @@ def _env_type(d: dict) -> str:
     if road["type"] == "junction":
         return "intersection"
     return "highway" if road.get("speed_limit_kph", 50) > 90 else "urban"
+
+
+def _signs_present(d: dict, old: list | None) -> list[str]:
+    """`traffic_signs_present` of the IMDAD record: the parent's entries plus the sign objects of the variant."""
+    from tsf.agents.augment_render import SIGN_NAME
+
+    names = []
+    for o in d.get("static_objects") or []:
+        if o.get("kind") == "traffic_sign" and o.get("sign_type"):
+            v = o.get("sign_value")
+            names.append(SIGN_NAME.get(o["sign_type"], o["sign_type"]) + (f" {v:g} km/h" if v is not None else ""))
+        elif o.get("kind") == "construction_sign":
+            names.append("construction warning board")
+    return list(dict.fromkeys([*(old or []), *names]))
 
 
 def _parties(d: dict) -> list[dict]:
@@ -113,7 +127,13 @@ def make_record(parent: dict, variant: dict, package: dict | None, *, variant_id
         "environment_type": _env_type(variant),
         "road_conditions": {"weather": _WEATHER[env["weather"]],
                             "lighting": _lighting(env, env.get("setting"), junction),
-                            "surface": _SURFACE[env["road_surface"]]},
+                            "surface": _SURFACE[env["road_surface"]],
+                            **({"speed_limit_kmh": min(o["sign_value"] for o in variant["static_objects"]
+                                                       if o.get("sign_type") == "speed_limit")}
+                               if any(o.get("sign_type") == "speed_limit" for o in variant.get("static_objects") or [])
+                               else {})},
+        **({"traffic_signs_present": _signs_present(variant, old_ai.get("traffic_signs_present"))}
+           if variant.get("static_objects") or old_ai.get("traffic_signs_present") else {}),
         "involved_parties": _parties(variant),
         "event_description": variant["meta"]["description"] or variant["meta"]["title"],
         "damage_assessment": {"severity": "S0", "kabco_scale": "O_NO_INJURY",

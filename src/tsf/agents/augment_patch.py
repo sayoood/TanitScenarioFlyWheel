@@ -283,12 +283,62 @@ def isolation(parent: dict, child: dict, dims, require_all: bool = True) -> Isol
         for d in dims:
             if _matches(ALLOW[d]["primary"], c.path):
                 by_dim[d] += 1
+    if "environment" in dims:
+        iso.violations += scene_sanity(parent, child, changes)
     iso.by_dim = by_dim
     iso.untouched = [d for d, n in by_dim.items() if n == 0] if require_all else []
     if require_all and not any(by_dim.values()):
         iso.untouched = list(dims)
     iso.ok = not iso.violations and not iso.untouched
     return iso
+
+
+def _arm_size(road: dict, pos: dict) -> tuple[int, float]:
+    """(driving lanes, length in m) of the road / arm / direction `pos` refers to, in the document `road`."""
+    d = pos.get("direction", "forward")
+    if road.get("type") == "junction":
+        arms = road.get("approaches", [])
+        a = arms[pos.get("road", 0)] if 0 <= pos.get("road", 0) < len(arms) else {}
+        return a.get(d if d in ("inbound", "outbound") else "inbound", {}).get("driving_lanes", 0), a.get("length", 0.0)
+    cfg = road.get("backward") if d == "backward" else road.get("forward")
+    return (cfg or {}).get("driving_lanes", 0), sum(x.get("length", 0.0) for x in road.get("segments", []))
+
+
+def scene_sanity(parent: dict, child: dict, changes: list[Change]) -> list[dict]:
+    """Environment variants must not move the scene to fit an object in, and what they add must be ahead of the ego:
+    (1) an actor's start (road, direction, s, lane) may only change when the parent position no longer exists in the
+    changed road; (2) an added static object behind the ego's start on the ego's road never appears in the clip."""
+    out: list[dict] = []
+    for c in changes:
+        m = re.fullmatch(r"/actors/([0-9]+)/initial/(road|direction|s|lane)", c.path)
+        if m and c.op == "replace" and int(m.group(1)) < len(parent.get("actors", [])):
+            pos = dict(parent["actors"][int(m.group(1))].get("initial", {}))
+            n, length = _arm_size(child.get("road", {}), pos)
+            if 1 <= pos.get("lane", 1) <= n and pos.get("s", 0.0) <= length:
+                out.append({"path": c.path, "op": c.op, "why": "the actor's start is still valid in the changed road; "
+                            "moving agents to make room is a behaviour change, keep them where they are and place the "
+                            "objects elsewhere"})
+    ego = next((a for a in parent.get("actors", []) if a.get("role") == "ego"), None)
+    if ego and ego.get("initial"):
+        p = ego["initial"]
+        sgn = -1.0 if p.get("direction") == "inbound" else 1.0
+        added = []                                           # (path, object) of every static object the child adds
+        for c in changes:
+            if c.op == "add" and re.fullmatch(r"/static_objects/[0-9]+", c.path) and isinstance(c.after, dict):
+                added.append((c.path, c.after))
+            elif c.op == "add" and c.path == "/static_objects" and isinstance(c.after, list):    # parent had no such key
+                added += [(f"/static_objects/{i}", o) for i, o in enumerate(c.after) if isinstance(o, dict)]
+        for path, o in added:
+            q = o.get("position") or {}
+            if (q.get("road", 0), q.get("direction", "forward")) != (p.get("road", 0), p.get("direction", "forward")):
+                continue
+            ahead = (q.get("s", 0.0) - p.get("s", 0.0)) * sgn
+            if ahead < -5.0:
+                out.append({"path": path, "op": "add", "why": (
+                    f"{o.get('id')} stands {-ahead:.0f} m behind the ego's start (s={q.get('s')} vs the ego's "
+                    f"s={p.get('s')}; ahead of the ego means {'s < ' if sgn < 0 else 's > '}{p.get('s')}), so it never "
+                    "appears in the clip: place it ahead of the ego")})
+    return out
 
 
 def index_table(doc: dict) -> str:
@@ -301,6 +351,15 @@ def index_table(doc: dict) -> str:
     if doc.get("static_objects"):
         rows.append("static_objects: " + ", ".join(f"{i}={a['id']}" for i, a in enumerate(doc["static_objects"])))
     road = doc["road"]
+    ego = next((a for a in doc["actors"] if a.get("role") == "ego"), None)
+    if ego and ego.get("initial"):
+        p = ego["initial"]
+        inbound = p.get("direction") == "inbound"
+        s0 = p.get("s", 0)
+        rows.append(f"ego start: road {p.get('road', 0)} {p.get('direction', 'forward')} lane {p.get('lane', 1)}, s={s0:.0f}, "
+                    f"{ego.get('initial_speed', 0):.1f} m/s; ahead of the ego on that road means {'s < ' if inbound else 's > '}{s0:.0f}"
+                    f"{' (down to 0 at the stop line)' if inbound else ''}; an object behind the start never appears in the clip. "
+                    "Do not move the ego or any other agent to make room for an object.")
     if road.get("type") == "junction":
         rows.append("road.approaches: " + ", ".join(f"{i}=heading {a['heading_deg']:.0f}deg"
                                                     for i, a in enumerate(road["approaches"])))

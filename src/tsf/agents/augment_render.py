@@ -44,6 +44,32 @@ def free_gb() -> float:
     return 1e9        # not a Linux host: do not block
 
 
+SIGN_NAME = {"speed_limit": "speed-limit sign", "stop": "stop sign", "yield": "yield sign", "no_entry": "no-entry sign",
+             "pedestrian_crossing": "pedestrian-crossing sign", "road_works": "road-works sign"}
+OBJECT_NAME = {"cone": ("traffic cone", "traffic cones"), "barrier": ("barrier", "barriers"),
+               "parked_car": ("parked car", "parked cars"), "parked_truck": ("parked truck", "parked trucks"),
+               "pole": ("pole", "poles"), "bollard": ("bollard", "bollards"),
+               "construction_sign": ("construction warning board", "construction warning boards"),
+               "traffic_sign": ("traffic sign", "traffic signs")}
+
+
+def _object_name(o: dict) -> str:
+    """Natural name of one static object: 'speed-limit sign 30', 'road-works sign', 'traffic cone', 'parked truck'."""
+    if o.get("kind") == "traffic_sign" and o.get("sign_type"):
+        v = o.get("sign_value")
+        return SIGN_NAME.get(o["sign_type"], o["sign_type"].replace("_", " ") + " sign") + (f" {v:g}" if v is not None else "")
+    return OBJECT_NAME.get(o["kind"], (o["kind"].replace("_", " "),) * 2)[0]
+
+
+def object_names(objs: list[dict]) -> list[str]:
+    """Distinct static objects with counts for the caption text: ['7 traffic cones', 'speed-limit sign 30', ...]."""
+    counts: dict[str, int] = {}
+    for o in objs:
+        counts[_object_name(o)] = counts.get(_object_name(o), 0) + 1
+    plural = {s: p for s, p in OBJECT_NAME.values()}
+    return [f"{n} {plural.get(name, name + 's')}" if n > 1 else name for name, n in counts.items()]
+
+
 def appearance_of(doc: dict) -> dict:
     """Variant environment as the appearance spec of the sensor renderer (+ a caption-ready text)."""
     e = doc["environment"]
@@ -54,10 +80,10 @@ def appearance_of(doc: dict) -> dict:
             f"{e['road_surface']} road surface"]
     objs = [{k: o.get(k) for k in ("kind", "sign_type", "sign_value") if o.get(k) is not None}
             for o in doc.get("static_objects") or []]
+    if e.get("setting"):
+        bits.append(f"{e['setting']} surroundings")
     if objs:
-        bits.append("static objects: " + ", ".join(
-            (o.get("sign_type") or o["kind"]).replace("_", " ") + (f" {o['sign_value']}" if "sign_value" in o else "")
-            for o in objs))
+        bits.append("static objects: " + ", ".join(object_names(doc.get("static_objects") or [])))
     return {"time_of_day": e["time_of_day"], "time_band": band, "weather": e["weather"],
             "precipitation": e["precipitation"], "fog_visibility_m": e["fog_visibility_m"],
             "cloud_cover": e["cloud_cover"], "road_surface": e["road_surface"], "setting": e.get("setting"),
@@ -239,9 +265,7 @@ def changed_objects(doc: dict, parent: dict) -> list[str]:
     for o in doc.get("static_objects") or []:
         if o["id"] in old:
             continue
-        name = (o.get("sign_type") or o["kind"]).replace("_", " ")
-        if o["kind"] in ("traffic_sign", "construction_sign") and o.get("sign_type"):
-            name += " sign" + (f" {o['sign_value']}" if o.get("sign_value") is not None else "")
+        name = _object_name(o)
         if name not in out:
             out.append(name)
     return out[:6]

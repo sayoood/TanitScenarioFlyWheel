@@ -179,6 +179,29 @@ def l2_lane_graph(sc: Scenario, m) -> list[Finding]:
     return out
 
 
+def l2_static_objects(sc: Scenario, m) -> list[Finding]:
+    """Every static object must be in the compiled map (as <object> or <signal>) where TanitSim puts it: a second,
+    independent implementation of the LanePosition -> world transform (xodr.py writes, odr.py reads it back)."""
+    if not sc.static_objects:
+        return []
+    from tsf.sim.static import build_static
+
+    try:
+        bodies = build_static(sc, m)
+    except Exception as e:  # position that does not resolve on the map: actionable for the agent
+        return [Finding("L2", "static_objects", False, f"{type(e).__name__}: {e}")]
+    in_map = {o.id: (o.x, o.y) for o in m.objects()}
+    in_map.update({sg.id: (sg.x, sg.y) for sg in m.signs()})
+    bad = []
+    for b in bodies:
+        if b.id not in in_map:
+            bad.append(f"{b.id}: missing in the compiled map")
+        elif math.hypot(in_map[b.id][0] - b.x, in_map[b.id][1] - b.y) > 0.1:
+            bad.append(f"{b.id}: map position differs from TanitSim by "
+                       f"{math.hypot(in_map[b.id][0] - b.x, in_map[b.id][1] - b.y):.2f} m")
+    return [Finding("L2", "static_objects", not bad, "; ".join(bad[:6]), {"n": len(bodies), "bad": bad})]
+
+
 # ----------------------------------------------------------------------------- L3
 def l3_assertions(sc: Scenario, log) -> list[Finding]:
     """Simulation oracle. Failure messages carry quantitative repair hints (the repairer's main signal)."""
@@ -247,6 +270,13 @@ def _collision_hint(log, cols: list) -> str:
     e = log.roles.index("ego")
     i = int(round(c["t"] / (log.t[1] - log.t[0])))
     msg = f"first contact t={c['t']:.1f}s with {c['with']}"
+    sb = next((b for b in getattr(log, "static", None) or [] if b.id == c["with"]), None)
+    if sb is not None:
+        msg += (f" (static {sb.kind} on lane {sb.lane}, {sb.t:+.1f} m from the lane centre; ego lane "
+                f"{log.lanes[i][e]}, ego {log.states[i, e, 3]:.1f} m/s)")
+        return (msg + ". The ego drives into a fixed object: move the object off the ego's path (other lane or "
+                "t_offset beyond the lane edge), or give the ego a lane_change / lane_offset / speed_change that "
+                "clears it with room to react; do not delete the assertion.")
     if c["with"] in log.ids:
         j = log.ids.index(c["with"])
         dx, dy = log.states[i, j, :2] - log.states[i, e, :2]
@@ -296,6 +326,7 @@ def run(raw: str | dict | Scenario, workdir: str | Path, qc: bool = True, simula
         rep.findings.append(Finding("L2", "tanitsim_parse", False, f"{type(e).__name__}: {e}"))
         return rep
     rep.findings += l2_lane_graph(sc, m)
+    rep.findings += l2_static_objects(sc, m)
     rep.timing["l2"] = round(time.perf_counter() - t0, 3)
     if not rep.passed or not simulate:
         return rep

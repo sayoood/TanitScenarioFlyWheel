@@ -37,7 +37,11 @@ type Scene = {bounds: [number, number, number, number],
               stop_lines: number[][][], signals: {arm: number, x: number, y: number, states: string[]}[],
               actors: {id: string, role: "ego"|"npc", category: string, lwh: [number, number, number], color: string}[],
               t: number[], tracks: Record<string, number[][]>,   // actor -> [[x, y, yaw, v], ...] per t
-              events: {t: number, type: string, id?: string, actor?: string}[]};
+              events: {t: number, type: string, id?: string, actor?: string}[],
+              static?: {id: string, kind: string, x: number, y: number, yaw: number, lwh: [number, number, number],
+                        lane: string, s: number, t: number, sign_type?: string, sign_value?: number}[]};
+// static: the scenario's static_objects (signs, cones, barriers, bollards, poles, parked vehicles) as ground boxes;
+// yaw is the box heading (for signs: the face normal, towards the approaching traffic); omitted when there are none.
 ```
 
 ## Live events

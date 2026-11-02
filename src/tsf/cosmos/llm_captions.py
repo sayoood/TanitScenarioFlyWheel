@@ -16,7 +16,7 @@ import json
 from pydantic import BaseModel, Field
 
 from tsf.agents.llm import LLM
-from tsf.cosmos.captions import CAMERAS_7, _bounds
+from tsf.cosmos.captions import CAMERAS_7, _bounds, environment_notes, placements
 
 VIEW = {"camera_front_wide_120fov": "front", "camera_front_tele_30fov": "front", "camera_cross_left_120fov": "left",
         "camera_cross_right_120fov": "right", "camera_rear_left_70fov": "rear", "camera_rear_right_70fov": "rear",
@@ -47,12 +47,21 @@ def llm_captions(tsir: dict, cameras=CAMERAS_7, *, frames: int = 297, fps: float
              "actions": [{k: a.get(k) for k in ("actor", "type", "start", "direction", "target_speed")}
                          for a in tsir["actions"]],
              "windows_s": [list(b) for b in bounds]}
-    msgs = [{"role": "system", "content": "You write scene captions for a photorealistic multi-camera driving-video "
+    if tsir.get("static_objects"):        # signs, cones, barriers, parked vehicles: where they stand, what they look like
+        brief["static_objects"] = [
+            {**{k: o.get(k) for k in ("id", "kind", "sign_type", "sign_value")},
+             "metres_left_of_ego": round(o["left"], 1), "metres_ahead_of_ego": round(o["long"])}
+            for o in placements(tsir) if o["same_way"]]
+        brief["visible_environment"] = {k: v for k, v in environment_notes(tsir).items() if v and not k.endswith("_again")}
+    msgs =[{"role": "system", "content": "You write scene captions for a photorealistic multi-camera driving-video "
              "generator. Concrete and visual, present tense; never mention cameras, sensors, lenses or the rig; "
              "describe only what can be seen; keep road users, colours and positions consistent across windows."},
             {"role": "user", "content": "Scenario (JSON): " + json.dumps(brief, separators=(",", ":")) +
-             "\nRespect the environment exactly (time of day, weather, surface). Invent a plausible, consistent "
-             "setting. For each of the three time windows describe what is visible ahead, left, right and behind "
+             "\nRespect the environment exactly (time of day, weather, surface, environment.setting). Invent a "
+             "plausible, consistent setting. Every sign and static object listed in the scenario must appear, with its "
+             "colour and shape (a speed-limit sign with its number, cones, barriers, parked vehicles), in the window "
+             "and the direction where the vehicle passes it; do not add road works or signs the scenario does not "
+             "list. For each of the three time windows describe what is visible ahead, left, right and behind "
              "the vehicle as the scenario unfolds."}]
     sc = SceneCaption.model_validate((llm or LLM()).chat(msgs, schema=SceneCaption.model_json_schema(),
                                                         role="captioner", max_tokens=3000))

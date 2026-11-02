@@ -30,6 +30,7 @@ from shapely.ops import unary_union
 
 from tsf.sim.engine import SimLog, TanitSim, lane_turn, obb_corners, obb_overlap
 from tsf.sim.odr import OdrMap
+from tsf.sim.static import explicit_speed_roads
 
 SS = 2                      # supersampling factor for geometry
 MAX_CANVAS = 26000
@@ -100,7 +101,8 @@ def _geoms(g):
 
 # ----------------------------------------------------------------------------- static map art
 class MapArt:
-    def __init__(self, m: OdrMap, ppm: float, seed: int = 7, region=None):
+    def __init__(self, m: OdrMap, ppm: float, seed: int = 7, region=None, skip_speed_roads=frozenset()):
+        self.skip_speed_roads = set(skip_speed_roads)    # roads whose speed-limit sign is an explicit static object
         self.m, self.ppm, self.rng = m, ppm * SS, np.random.default_rng(seed)
         lanes = list(m.lanes.values())
         self.urban = min((ln.speed for ln in lanes), default=13.9) * 3.6 <= 70 or bool(m.junctions)
@@ -335,7 +337,7 @@ class MapArt:
         img = self.img
         self.sign_spots = []
         for r in self.m.roads.values():
-            if r.junction != "-1" or r.speed_kph is None:
+            if r.junction != "-1" or r.speed_kph is None or r.id in self.skip_speed_roads:
                 continue
             for lid_sign, s in ((-1, min(40.0, r.length * 0.3)), (1, max(r.length - 40.0, r.length * 0.7))):
                 lids = [k for k in r.sections[0].lanes if (k > 0) == (lid_sign > 0)]
@@ -370,14 +372,105 @@ class Renderer:
         xs, ys = S[:, :, 0], S[:, :, 1]
         view = (self.W / self.ppm, self.H / self.ppm)
         region = (xs.min() - view[0], ys.min() - view[1], xs.max() + view[0], ys.max() + view[1])
-        self.art = MapArt(sim.m, self.ppm, seed=zlib.crc32(sim.sc.meta.id.encode()), region=region)
+        self.art = MapArt(sim.m, self.ppm, seed=zlib.crc32(sim.sc.meta.id.encode()), region=region,
+                          skip_speed_roads=explicit_speed_roads(getattr(sim, "static", [])))
         self.colors = {}
         for a in sim.sc.actors:
             self.colors[a.id] = VEH_COLORS.get(a.color.lower(), "#9aa3ad")
+        self._paint_statics()
         self.e = log.roles.index("ego")
         self._indicators()
         self._fonts()
         self._minimap_init()
+
+    # ---------------------------------------------------------------- static environment (painted once)
+    def _paint_statics(self):
+        """Cones, barriers, bollards, poles, signs and parked vehicles go into the static map layer."""
+        A, img = self.art, self.art.img
+        palette = ["white", "silver", "grey", "black", "blue", "red"]
+        for b in getattr(self.sim, "static", []):
+            x, y, yaw, (l, w, h) = b.x, b.y, b.yaw, b.lwh
+            k = b.kind
+            if k in ("parked_car", "parked_truck"):
+                A.fill(img, _local(x + 0.45, y - 0.45, yaw, _rrect_local(l, w, 0.3 * w)), bgr(P["bshadow"]))
+                col = VEH_COLORS[palette[zlib.crc32(b.id.encode()) % len(palette)]]
+                self._vehicle(img, -1, x, y, yaw, l, w, "car" if k == "parked_car" else "truck", col, 0.0, 0, False,
+                              (0, 0))
+            elif k == "cone":
+                r = max(0.28, 0.65 * max(l, w))
+                circ = np.array([(x + r * math.cos(a), y + r * math.sin(a)) for a in np.linspace(0, 2 * math.pi, 20)])
+                A.fill(img, circ + (0.15, -0.15), bgr(P["bshadow"]))
+                A.fill(img, circ, bgr("#ff7a1a"))
+                A.fill(img, (circ - (x, y)) * 0.62 + (x, y), bgr("#f4f4f0"))
+                A.fill(img, (circ - (x, y)) * 0.28 + (x, y), bgr("#ff7a1a"))
+            elif k == "barrier":
+                body = _local(x, y, yaw, _rrect_local(l, max(w, 0.4), 0.05))
+                A.fill(img, body + (0.2, -0.2), bgr(P["bshadow"]))
+                A.fill(img, body, bgr("#f1f1ec"))
+                n = max(2, int(round(l / 0.5)))
+                for q in range(0, n, 2):
+                    x0, x1 = -l / 2 + q * l / n, -l / 2 + (q + 1) * l / n
+                    A.fill(img, _local(x, y, yaw, np.array([(x0, w / 2), (x0, -w / 2), (x1, -w / 2), (x1, w / 2)])),
+                           bgr(P["red"]))
+                A.line(img, body, (70, 70, 70), 0.06, closed=True)
+            elif k in ("bollard", "pole"):
+                r = max(0.16, 0.5 * max(l, w))
+                circ = np.array([(x + r * math.cos(a), y + r * math.sin(a)) for a in np.linspace(0, 2 * math.pi, 14)])
+                A.fill(img, circ + (0.2, -0.2), bgr(P["bshadow"]))
+                A.fill(img, circ, (70, 74, 80) if k == "pole" else bgr("#e8c840"))
+                A.line(img, circ, bgr(P["white"]) if k == "bollard" else (110, 116, 124), 0.06, closed=True)
+            else:                                           # traffic_sign / construction_sign
+                self._sign_icon(img, x, y, yaw, b)
+
+    def _sign_icon(self, img, x, y, yaw, b):
+        """Symbolic top-down sign plate (about 2.2 m across) with its post at the stand position."""
+        A = self.art
+        rad = 1.1
+        ang = np.linspace(0, 2 * math.pi, 28)
+        circ = np.array([(x + rad * math.cos(a), y + rad * math.sin(a)) for a in ang])
+        A.fill(img, circ + (0.25, -0.25), bgr(P["bshadow"]))
+        st = b.sign_type or "road_works"
+        c = A.px([x, y]).astype(int)
+        text = None
+        if st == "speed_limit":
+            A.fill(img, circ, (60, 60, 220))
+            A.fill(img, (circ - (x, y)) * 0.78 + (x, y), (245, 245, 245))
+            text = f"{b.sign_value:g}"
+        elif st == "stop":
+            oct_ = np.array([(x + rad * math.cos(a + math.pi / 8), y + rad * math.sin(a + math.pi / 8))
+                             for a in np.linspace(0, 2 * math.pi, 9)[:-1]])
+            A.fill(img, oct_, (60, 60, 220))
+            A.line(img, oct_, (245, 245, 245), 0.1, closed=True)
+            text = "STOP"
+        elif st == "yield":
+            tri = np.array([(x + rad * 1.1 * math.cos(a), y + rad * 1.1 * math.sin(a))
+                            for a in (math.pi / 2, math.pi / 2 + 2.094, math.pi / 2 + 4.189)])
+            tri = (tri - (x, y)) * -1 + (x, y)
+            A.fill(img, tri, (60, 60, 220))
+            A.fill(img, (tri - (x, y)) * 0.6 + (x, y), (245, 245, 245))
+        elif st == "no_entry":
+            A.fill(img, circ, (60, 60, 220))
+            A.fill(img, np.array([(x - 0.7, y + 0.16), (x + 0.7, y + 0.16), (x + 0.7, y - 0.16), (x - 0.7, y - 0.16)]),
+                   (245, 245, 245))
+        elif st == "pedestrian_crossing":
+            tri = np.array([(x + rad * 1.1 * math.cos(a), y + rad * 1.1 * math.sin(a))
+                            for a in (math.pi / 2, math.pi / 2 + 2.094, math.pi / 2 + 4.189)])
+            A.fill(img, tri, (70, 200, 245))
+            A.line(img, tri, (30, 30, 30), 0.1, closed=True)
+            text = "i"
+        else:                                               # road works / construction board: orange diamond
+            dia = np.array([(x + rad * 1.15, y), (x, y + rad * 1.15), (x - rad * 1.15, y), (x, y - rad * 1.15)])
+            A.fill(img, dia, (40, 150, 250))
+            A.line(img, dia, (20, 20, 20), 0.1, closed=True)
+            A.fill(img, np.array([(x - 0.35, y + 0.2), (x + 0.35, y + 0.2), (x + 0.35, y + 0.08), (x - 0.35, y + 0.08)]),
+                   (20, 20, 20))
+            A.fill(img, np.array([(x - 0.35, y - 0.08), (x + 0.35, y - 0.08), (x + 0.35, y - 0.2), (x - 0.35, y - 0.2)]),
+                   (20, 20, 20))
+        if text:
+            fs = rad * A.ppm / (26.0 if len(text) < 4 else 34.0)
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_DUPLEX, fs, max(1, int(fs * 1.6)))
+            cv2.putText(img, text, (c[0] - tw // 2, c[1] + th // 2), cv2.FONT_HERSHEY_DUPLEX, fs,
+                        (245, 245, 245) if st == "stop" else (20, 20, 20), max(1, int(fs * 1.6)), cv2.LINE_AA)
 
     # ---------------------------------------------------------------- precomputation
     def _indicators(self):

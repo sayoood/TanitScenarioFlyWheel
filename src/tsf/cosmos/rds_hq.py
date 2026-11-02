@@ -62,6 +62,17 @@ OBJECT_CLASS = {
     "pedestrian": "Pedestrian", "bicycle": "Cyclist", "motorcycle": "Cyclist",
 }
 
+# static environment objects (TSIR `static_objects`): parked vehicles keep their semantic class, cones / barriers /
+# bollards are `Others` cuboids (static, so the LiDAR range-map control ray-casts them like vehicles); signs go to
+# `3d_traffic_signs` with a sign_class (their posts and poles to `3d_poles`)
+STATIC_OBJECT_CLASS = {"parked_car": "Car", "parked_truck": "Truck", "cone": "Others", "barrier": "Others",
+                       "bollard": "Others"}
+SIGN_CLASS = {
+    "speed_limit": "TRAFFIC_SIGN_REGULATORY_R2_SPEED_LIMIT", "stop": "TRAFFIC_SIGN_REGULATORY_R1_STOP",
+    "yield": "TRAFFIC_SIGN_REGULATORY_R1_YIELD", "no_entry": "TRAFFIC_SIGN_REGULATORY_R5_DO_NOT_ENTER",
+    "pedestrian_crossing": "TRAFFIC_SIGN_WARNING_W11_PEDESTRIAN_CROSSING", "road_works": "TRAFFIC_SIGN_WARNING_W20_ROAD_WORK",
+}
+
 # traffic-light head geometry (the xodr compiler places 0.9 m x 0.35 m heads with their bottom edge 2.5 m up)
 TL_BOTTOM, TL_HEIGHT, TL_WIDTH, TL_DEPTH = 2.5, 0.9, 0.35, 0.50   # depth: see-through of the renderer glyph bias beyond ~33 m
 SIGN_SIZE, SIGN_CENTER_Z, SIGN_DEPTH = 0.75, 2.2, 0.10
@@ -164,11 +175,17 @@ def _text(name, val):
 
 
 # ============================================================================== window selection
+def _statics(sim, log) -> list:
+    """Static environment bodies of a run (``SimLog.static``, else ``sim.static``)."""
+    return list(getattr(log, "static", None) or getattr(sim, "static", None) or [])
+
+
 def choose_t0(sim, log, duration: float = CHUNK_SECONDS, step: float = 0.25) -> tuple[float, dict]:
     """Pick the clip start with the most ego motion / interaction.
 
     score(t0) = mean ego speed [m/s] + 25 * total |ego yaw change| [rad] + 6 * mean #actors within 40 m
-                + 10 * mean #actors within 15 m + 3 * #scripted action start/end events in the window.
+                + 10 * mean #actors within 15 m + 3 * #scripted action start/end events in the window
+                + 1.5 * mean #static objects within 40 m.
     Candidates are every ``step`` s such that the whole window fits in the log. Returns ``(t0, info)``.
     """
     t = np.asarray(log.t)
@@ -184,19 +201,25 @@ def choose_t0(sim, log, duration: float = CHUNK_SECONDS, step: float = 0.25) -> 
     dyaw = np.abs(np.diff(yaw, prepend=yaw[0]))
     dist = np.hypot(S[:, others, 0] - S[:, [e], 0], S[:, others, 1] - S[:, [e], 1]) if others else np.zeros((n, 0))
     near, close = (dist < 40).sum(1), (dist < 15).sum(1)
+    stat = _statics(sim, log)
+    if stat:        # a work zone / parked vehicles within 40 m of the ego count like nearby actors
+        sd = np.hypot(np.array([b.x for b in stat])[None, :] - S[:, [e], 0], np.array([b.y for b in stat])[None, :] - S[:, [e], 1])
+        near_s = (sd < 40).sum(1)
+    else:
+        near_s = np.zeros(n)
     ev_t = np.array([ev["t"] for ev in log.events if ev.get("type") in ("action_start", "action_end")])
 
     def cs(x):
         return np.concatenate([[0.0], np.cumsum(x)])
 
-    c_v, c_y, c_n, c_c = cs(S[:, e, 3]), cs(dyaw), cs(near), cs(close)
+    c_v, c_y, c_n, c_c, c_s = cs(S[:, e, 3]), cs(dyaw), cs(near), cs(close), cs(near_s)
     idxs = np.arange(0, last + 1, max(1, int(round(step / dt))))
     best, scores = None, []
     for i in idxs:
         j = i + win
         n_ev = int(((ev_t >= t[i]) & (ev_t <= t[j])).sum()) if len(ev_t) else 0
         parts = dict(speed=(c_v[j] - c_v[i]) / win, turn=25 * (c_y[j] - c_y[i]), near=6 * (c_n[j] - c_n[i]) / win,
-                     close=10 * (c_c[j] - c_c[i]) / win, events=3.0 * n_ev)
+                     close=10 * (c_c[j] - c_c[i]) / win, events=3.0 * n_ev, static=1.5 * (c_s[j] - c_s[i]) / win)
         sc = float(sum(parts.values()))
         scores.append(sc)
         if best is None or sc > best[0] + 1e-9:
@@ -261,11 +284,14 @@ class MapLayers:
         self.stats: dict[str, int] = {}
         lanes = list(self.m.lanes.values())
         self.urban = min((ln.speed for ln in lanes), default=13.9) * 3.6 <= 70 or bool(self.m.junctions)
+        self.static = _statics(sim, log)
+        self.static_report: dict = {"signs": {}, "poles": [], "objects": {}}
         self._lanelines()
         self._boundaries()
         self._arms_markings()
         self._arrows()
         self._signs()
+        self._statics()
         self._signals()
         self.stats = {k: len(v) for k, v in self.layers.items()}
 
@@ -414,8 +440,9 @@ class MapLayers:
 
     # ---- speed-limit signs (as in render2d) ------------------------------------------------------------
     def _signs(self):
+        explicit = {b.road for b in self.static if b.sign_type == "speed_limit"}   # roads with their own speed signs
         for r in self.m.roads.values():
-            if r.junction != "-1" or r.speed_kph is None:
+            if r.junction != "-1" or r.speed_kph is None or r.id in explicit:
                 continue
             for side, s in ((-1, min(40.0, r.length * 0.3)), (1, max(r.length - 40.0, r.length * 0.7))):
                 lids = [k for k in r.sections[0].lanes if (k > 0) == (side > 0)]
@@ -434,6 +461,28 @@ class MapLayers:
                 self.layers["3d_traffic_signs"].append(
                     _lbl("cuboid3d", cub, [_text("sign_class", "TRAFFIC_SIGN_REGULATORY_R2_SPEED_LIMIT")]))
                 self._pole(pos, SIGN_CENTER_Z + SIGN_SIZE / 2 + 0.2, behind=normal, back=SIGN_DEPTH / 2 + 0.05)
+
+    # ---- static environment objects ---------------------------------------------------------------------
+    def _statics(self):
+        """Signs -> ``3d_traffic_signs`` (+ post in ``3d_poles``), poles -> ``3d_poles``. Cones, barriers, bollards and
+        parked vehicles are tracked objects (see ``export_clip``), not map elements."""
+        for b in self.static:
+            pos = np.array([b.x, b.y])
+            if not self._near(pos[None]).any():
+                continue
+            l, w, h = b.lwh
+            if b.kind == "pole":
+                q = self.wf.xy(pos)
+                self.layers["3d_poles"].append(_lbl("polyline3d", [[q[0], q[1], 0.0], [q[0], q[1], h]]))
+                self.static_report["poles"].append(b.id)
+            elif b.is_panel:
+                cls = SIGN_CLASS[b.sign_type or "road_works"]
+                panel = min(w, h) if b.kind == "traffic_sign" else 0.6 * h
+                depth = max(l, SIGN_DEPTH)
+                cub = _cuboid([*self.wf.xy(pos), h - panel / 2], float(self.wf.yaw(b.yaw)), (depth, w, panel))
+                self.layers["3d_traffic_signs"].append(_lbl("cuboid3d", cub, [_text("sign_class", cls)]))
+                self._pole(pos, h - panel, behind=b.yaw, back=depth / 2 + 0.05)
+                self.static_report["signs"][b.id] = cls
 
     def _pole(self, pos_sim: np.ndarray, top: float, behind: float, back: float):
         base = np.asarray(pos_sim) - back * np.array([math.cos(behind), math.sin(behind)])
@@ -590,6 +639,23 @@ def export_clip(sim, log, out_root, clip_id: str, t0: float | None = None, durat
             objects[k][aid] = {"object_type": otype, "object_is_moving": moving, "object_lwh": [l, w, h],
                                "object_to_world": _T(_rz(aw[k])[:3, :3], [cw[k, 0], cw[k, 1], h / 2]).tolist()}
 
+    # ---- static environment objects: tracked, never moving, fixed world pose
+    static = _statics(sim, log)
+    static_cls = {}
+    for b in static:
+        otype = STATIC_OBJECT_CLASS.get(b.kind)
+        if otype is None:                  # signs and poles are map elements (MapLayers._statics)
+            continue
+        static_cls[b.id] = f"{b.kind} -> {otype}"
+        l, w, h = b.lwh
+        cw, aw = wf.xy(np.array([b.x, b.y])), float(wf.yaw(b.yaw))
+        tf = _T(_rz(aw)[:3, :3], [cw[0], cw[1], h / 2]).tolist()
+        moving_flags[b.id] = False
+        for k in np.flatnonzero(np.hypot(b.x - ex, b.y - ey) <= max_obj_range):
+            objects[k][b.id] = {"object_type": otype, "object_is_moving": False, "object_lwh": [l, w, h],
+                                "object_to_world": tf}
+    cls_map.update(static_cls)
+
     # ---- map + traffic lights
     protected = bool(getattr(getattr(sim, "signals", None), "enabled", False) and getattr(sim.signals, "protected", False))
     lam = protected if left_arrow_heads is None else left_arrow_heads
@@ -636,6 +702,11 @@ def export_clip(sim, log, out_root, clip_id: str, t0: float | None = None, durat
                 "speed0_ms": round(float(np.interp(t0, t_log, S[:, e, 3])), 3)},
         "objects": {"tracks": rep["tracks"], "class_mapping": cls_map, "moving": moving_flags,
                     "observations": rep["object_class_observations"]},
+        "static_objects": {"n": len(static), "as_objects": static_cls, "as_signs": ml.static_report["signs"],
+                           "as_poles": ml.static_report["poles"],
+                           "dropped_outside_map_radius": [b.id for b in static if b.id not in static_cls
+                                                          and b.id not in ml.static_report["signs"]
+                                                          and b.id not in ml.static_report["poles"]]},
         "map_labels": rep["map_labels"], "traffic_lights": ml.heads, "signal_merge_check": sig_info,
         "signal_state_observations": rep["signal_state_observations"],
         "validator": {"helper": "NVIDIA rds_hq_io.py write_clip + validate_clip", "ok": True,

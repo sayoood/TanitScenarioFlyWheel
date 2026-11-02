@@ -153,6 +153,32 @@ class Signal:
     x: float = 0.0
     y: float = 0.0
     hdg: float = 0.0
+    subtype: str = ""
+    value: float | None = None
+    name: str = ""
+    height: float = 0.0
+    width: float = 0.0
+    z_offset: float = 0.0
+
+
+@dataclass
+class RoadObject:
+    """`<object>`: a static object placed at (s, t) of a road. x, y, hdg are the world pose of its local x axis."""
+    id: str
+    road: str
+    s: float
+    t: float
+    type: str
+    subtype: str = ""
+    name: str = ""
+    hdg_rel: float = 0.0
+    length: float = 0.0
+    width: float = 0.0
+    height: float = 0.0
+    z_offset: float = 0.0
+    x: float = 0.0
+    y: float = 0.0
+    hdg: float = 0.0
 
 
 @dataclass
@@ -166,6 +192,7 @@ class Road:
     link: dict = field(default_factory=dict)
     speed_kph: float | None = None
     signals: list[Signal] = field(default_factory=list)
+    objects: list[RoadObject] = field(default_factory=list)
 
     def ref(self, s: np.ndarray):
         s = np.clip(np.asarray(s, dtype=float), 0, self.length)
@@ -257,8 +284,16 @@ class OdrMap:
     lanes: dict[LaneKey, Lane]
     header: dict
 
-    def signals(self) -> list[Signal]:
-        return [sg for r in self.roads.values() for sg in r.signals]
+    def signals(self, dynamic_only: bool = True) -> list[Signal]:
+        """Traffic lights (dynamic signals) by default; `dynamic_only=False` also returns static signs."""
+        return [sg for r in self.roads.values() for sg in r.signals if sg.dynamic or not dynamic_only]
+
+    def signs(self) -> list[Signal]:
+        """Static `<signal>`s (traffic signs)."""
+        return [sg for r in self.roads.values() for sg in r.signals if not sg.dynamic]
+
+    def objects(self) -> list[RoadObject]:
+        return [ob for r in self.roads.values() for ob in r.objects]
 
     def bounds(self) -> tuple[float, float, float, float]:
         pts = np.concatenate([ln.xy for ln in self.lanes.values()])
@@ -345,7 +380,17 @@ def load(path: str | Path, ds: float = 0.5) -> OdrMap:
         if sigs is not None:
             for sg in sigs.findall("signal"):
                 road.signals.append(Signal(sg.get("id"), road.id, _f(sg, "s"), _f(sg, "t"), sg.get("type", ""),
-                                           sg.get("orientation", "+"), sg.get("dynamic", "no") == "yes"))
+                                           sg.get("orientation", "+"), sg.get("dynamic", "no") == "yes",
+                                           subtype=sg.get("subtype", ""),
+                                           value=float(sg.get("value")) if sg.get("value") is not None else None,
+                                           name=sg.get("name", ""), height=_f(sg, "height"), width=_f(sg, "width"),
+                                           z_offset=_f(sg, "zOffset")))
+        objs = r.find("objects")
+        if objs is not None:
+            for ob in objs.findall("object"):
+                road.objects.append(RoadObject(ob.get("id"), road.id, _f(ob, "s"), _f(ob, "t"), ob.get("type", "none"),
+                                               ob.get("subtype", ""), ob.get("name", ""), _f(ob, "hdg"),
+                                               _f(ob, "length"), _f(ob, "width"), _f(ob, "height"), _f(ob, "zOffset")))
         roads[road.id] = road
     junctions = {}
     for j in root.findall("junction"):
@@ -364,6 +409,10 @@ def load(path: str | Path, ds: float = 0.5) -> OdrMap:
             n = -math.sin(h[0]), math.cos(h[0])
             sg.x, sg.y = float(x[0] + n[0] * sg.t), float(y[0] + n[1] * sg.t)
             sg.hdg = float(h[0] + (math.pi if sg.orientation == "-" else 0.0))
+        for ob in r.objects:
+            x, y, h = r.ref(np.array([ob.s]))
+            ob.x, ob.y = float(x[0] - math.sin(h[0]) * ob.t), float(y[0] + math.cos(h[0]) * ob.t)
+            ob.hdg = float(h[0] + ob.hdg_rel)
     return m
 
 

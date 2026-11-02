@@ -7,6 +7,10 @@ The templates cover the two bridged scenarios (signalized intersection, three-la
 
     caps = template_captions("uc1_left_turn_intersection", CAMERAS_7, frames=297)
     write_sidecars(caps, out_dir / "captions", frames=297)      # captions/<camera_key>.json, native + Videos API layout
+
+Scenarios with a static environment (``static_objects``: signs, cones, barriers, parked vehicles; ``environment.setting``)
+pass their TSIR as ``tsir=``: ``environment_notes`` turns it into view-specific sentences that replace a detail sentence of
+the front / side / rear bodies, so Cosmos renders what the WSM controls only carry as boxes and sign panels.
 """
 from __future__ import annotations
 
@@ -237,6 +241,128 @@ def scenario_kind(scenario: str) -> str:
     raise KeyError(f"no caption template for scenario {scenario!r}; pass your own captions")
 
 
+# -- environment: setting, signs and static objects (TSIR -> sentences) ----------------------------------------------
+SETTING_TEXT = {
+    "urban": "a dense city street with multi-storey buildings, shopfronts and concrete sidewalks",
+    "suburban": "a suburban street with low houses and commercial buildings, trimmed lawns, trees and concrete sidewalks",
+    "rural": "an open rural road with fields, hedgerows, scattered trees and wooden fence posts",
+    "highway": "a highway with metal guardrails, grass shoulders and distant low hills",
+    "industrial": "an industrial district with warehouses, loading docks, chain-link fences and wide paved yards",
+}
+SIGN_TEXT = {
+    "speed_limit": "a round white speed-limit sign with a red border showing {v:g}",
+    "stop": "a red octagonal stop sign", "yield": "a red-bordered white triangular yield sign",
+    "no_entry": "a round red no-entry sign with a white bar",
+    "pedestrian_crossing": "a yellow pedestrian-crossing warning sign",
+    "road_works": "an orange diamond-shaped road-works warning sign",
+}
+OBJECT_TEXT = {   # kind -> (singular, plural)
+    "cone": ("an orange-and-white traffic cone", "orange-and-white traffic cones"),
+    "barrier": ("a red-and-white striped barrier", "red-and-white striped barriers"),
+    "parked_car": ("a parked car", "parked cars"), "parked_truck": ("a parked truck", "parked trucks"),
+    "pole": ("a tall metal pole", "tall metal poles"), "bollard": ("a short yellow bollard", "short yellow bollards"),
+    "construction_sign": ("an orange construction warning board", "orange construction warning boards"),
+}
+_NUM = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight"}
+KERB = 1.75          # |lateral| beyond which an object is outside the ego's lane
+LANE_EDGE = 5.25     # ... and beyond which it is outside the adjacent lane too (roadside)
+
+
+def _lane_width(road: dict, direction: str) -> float:
+    if road.get("type") != "linear":
+        return 3.5
+    cfg = road.get("forward") if direction in ("forward", "outbound") else road.get("backward")
+    return float((cfg or {}).get("lane_width", 3.5))
+
+
+def placements(tsir) -> list[dict]:
+    """Where each static object is relative to the ego at its start, from the TSIR alone: ``long`` (m, + = ahead,
+    along the driving direction), ``left`` (m, + = left of the ego; lanes count from the centre line, so a larger lane
+    number is further right) and ``same_way`` (same road and direction as the ego)."""
+    tsir = tsir.model_dump() if hasattr(tsir, "model_dump") else tsir
+    ego = next(a for a in tsir["actors"] if a.get("role") == "ego")
+    e = {"road": 0, "direction": "forward", "lane": 1, "s": 0.0, "t_offset": 0.0, **ego["initial"]}
+    road, out = tsir["road"], []
+    for o in tsir.get("static_objects") or []:
+        p = {"road": 0, "direction": "forward", "lane": 1, "s": 0.0, "t_offset": 0.0, **o["position"]}
+        same = p["road"] == e["road"] and p["direction"] == e["direction"]
+        long = (e["s"] - p["s"]) if e["direction"] == "inbound" else (p["s"] - e["s"])
+        left = (e["lane"] - p["lane"]) * _lane_width(road, e["direction"]) + p["t_offset"] - e["t_offset"]
+        out.append({**o, "same_way": same, "long": float(long), "left": float(left)})
+    return out
+
+
+_CATEGORY = {"traffic_sign": 0, "construction_sign": 0, "cone": 1, "barrier": 1, "parked_car": 2, "parked_truck": 2,
+             "pole": 3, "bollard": 3}      # signs first, then the closure, parked vehicles, street furniture
+
+
+def _noun(items: list[dict]) -> str:
+    o, n = items[0], len(items)
+    if o["kind"] == "traffic_sign":
+        one = SIGN_TEXT[o["sign_type"]].format(v=o.get("sign_value") or 0)
+        many = one.split(" ", 1)[1].replace(" sign", " signs", 1)
+    else:
+        one, many = OBJECT_TEXT[o["kind"]]
+    return one if n == 1 else f"{_NUM.get(n, n)} {many}"
+
+
+def _sentence(items: list[dict], place: str, dist: str | None = None, still: bool = False) -> str:
+    """One sentence for objects of one category: counts and nouns, location, then a distance or 'still'."""
+    by: dict = {}
+    for o in items:
+        by.setdefault((o["kind"], o.get("sign_type"), o.get("sign_value")), []).append(o)
+    nouns = [_noun(g) for g in by.values()]
+    subject = nouns[0] if len(nouns) == 1 else ", ".join(nouns[:-1]) + " and " + nouns[-1]
+    verb = ("still " if still else "") + ("stand" if len(items) > 1 else "stands")
+    return (subject[0].upper() + subject[1:] + f" {verb} {place}") + (f", {dist}" if dist else "") + "."
+
+
+def environment_notes(tsir) -> dict[str, list[str]]:
+    """View-specific sentences for ``environment.setting`` and the static objects of a TSIR (dict or ``Scenario``):
+    ``{"setting": [..], "front": [..], "left": [..], "right": [..], "rear": [..]}`` (empty lists when nothing applies).
+    Each list holds up to three sentences, one per category (signs, closure cones/barriers, parked vehicles, poles),
+    only the first with a distance; ``<view>_again`` repeats them with 'still' for later time blocks."""
+    tsir = tsir.model_dump() if hasattr(tsir, "model_dump") else tsir
+    notes: dict[str, list[str]] = {k: [] for k in ("setting", "front", "left", "right", "rear", "front_again",
+                                                  "left_again", "right_again", "rear_again")}
+    setting = (tsir.get("environment") or {}).get("setting")
+    if setting in SETTING_TEXT:
+        notes["setting"].append(f"The surroundings are {SETTING_TEXT[setting]}.")
+    objs = [o for o in placements(tsir) if o["same_way"]]
+
+    def where(items: list[dict]) -> tuple[str, str]:
+        o = min(items, key=lambda x: abs(x["long"]))
+        side = "right" if o["left"] < 0 else "left"
+        if abs(o["position"].get("t_offset", 0.0)) > KERB:              # outside its own lane: at the edge / beside
+            place = f"at the {side} edge of the road" if abs(o["left"]) <= LANE_EDGE else f"on the {side} roadside"
+        elif abs(o["left"]) <= KERB:
+            place = "in the vehicle's lane"
+        else:
+            place = f"in the lane to the {side}"
+        return place, f"about {abs(o['long']):.0f} m {'ahead' if o['long'] >= 0 else 'behind'}"
+
+    def add(view: str, sel: list[dict], cap: int, distances: bool):
+        by: dict = {}
+        for o in sel:
+            by.setdefault(_CATEGORY[o["kind"]], []).append(o)
+        for cat in sorted(by)[:cap]:
+            place, dist = where(by[cat])
+            notes[view].append(_sentence(by[cat], place, dist if distances and not notes[view] else None))
+            notes[view + "_again"].append(_sentence(by[cat], place, None, still=True))
+
+    add("front", [o for o in objs if 0 <= o["long"] <= 150 and abs(o["left"]) <= 9], 3, True)
+    add("rear", [o for o in objs if -60 <= o["long"] < 0 and abs(o["left"]) <= 9], 2, True)
+    for side, sel in (("left", [o for o in objs if o["left"] > KERB and -30 <= o["long"] <= 150]),
+                      ("right", [o for o in objs if o["left"] < -KERB and -30 <= o["long"] <= 150])):
+        by: dict = {}
+        for o in sel:
+            by.setdefault(_CATEGORY[o["kind"]], []).append(o)
+        for cat in sorted(by)[:3]:
+            notes[side].append(_sentence(by[cat], f"beside the road on the {side}"))
+            notes[side + "_again"].append(_sentence(by[cat], f"beside the road on the {side}", still=True))
+    return notes
+
+
 def _bounds(frames: int, fps: float, n: int = 3) -> list[tuple[float, float]]:
     """``n`` consecutive time windows covering ``frames / fps`` seconds, edges rounded to 0.1 s."""
     dur = frames / fps
@@ -244,15 +370,31 @@ def _bounds(frames: int, fps: float, n: int = 3) -> list[tuple[float, float]]:
     return list(zip(edges[:-1], edges[1:]))
 
 
-def template_captions(scenario: str, cameras=CAMERAS_7, *, frames: int = 297, fps: float = 30.0) -> dict[str, str]:
-    """Timestamped caption body per camera (300-400 words) for ``scenario``; ``frames``/``fps`` set the block bounds."""
+def template_captions(scenario: str, cameras=CAMERAS_7, *, frames: int = 297, fps: float = 30.0,
+                      tsir=None) -> dict[str, str]:
+    """Timestamped caption body per camera (300-400 words) for ``scenario``; ``frames``/``fps`` set the block bounds.
+
+    tsir: the scenario's TSIR (dict or ``Scenario``). Its static objects and a ``environment.setting`` that differs
+    from the template's own replace detail sentences (one per block) by what the camera sees of them; the 400-word
+    cap holds because a replaced sentence is dropped."""
     t = TEMPLATES[scenario_kind(scenario)]
+    notes = environment_notes(tsir) if tsir is not None else None
+    base_setting = "suburban" if t is _INTERSECTION else "highway"
+    cur_setting = ((tsir.model_dump() if hasattr(tsir, "model_dump") else tsir).get("environment") or {}).get(
+        "setting") if tsir is not None else None
     out = {}
     for cam in cameras:
         if cam not in t["view"]:
             raise KeyError(f"no caption template for camera {cam!r}")
         group = "front" if "front" in cam else "side" if "cross" in cam else "rear"
-        extra = t["detail"][group]
+        extra = list(t["detail"][group])
+        if notes is not None:
+            view = "front" if group == "front" else "rear" if group == "rear" else ("left" if "left" in cam else "right")
+            mine, again = notes[view], notes[view + "_again"]
+            for i in range(3 if mine else 0):            # block i introduces the i-th group, else repeats the first
+                extra[i] = mine[i] if i < len(mine) else again[0]
+            if notes["setting"] and cur_setting not in (None, base_setting):
+                extra[2] = notes["setting"][0]
         blocks = []
         for i, ((a, b), text) in enumerate(zip(_bounds(frames, fps), t["view"][cam])):
             lead = t["setting"] if i == 0 else t["remind"]
