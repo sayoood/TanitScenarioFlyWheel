@@ -147,6 +147,7 @@ class RefePolicy:
                                                      # plan is re-expressed in the moving ego frame in between (0 = every call)
     name: str = "refe_sft4"
     last: dict = field(default_factory=dict, init=False)
+    calls: list = field(default_factory=list, init=False, repr=False)   # per model call: t, v, d, goal, k, plan_end
     n_calls: int = field(default=0, init=False)
     n_fallback: int = field(default=0, init=False)
     _consec: int = field(default=0, init=False, repr=False)
@@ -180,6 +181,7 @@ class RefePolicy:
         """Forget the stored plan (a new scenario; sim time restarts, which ``needs_frames`` also detects)."""
         self._plan = None
         self._consec = 0
+        self.calls = []
 
     # -- policy interface ------------------------------------------------------------------------------------------
     def needs_frames(self, sim) -> bool:
@@ -197,12 +199,17 @@ class RefePolicy:
         t0 = time.perf_counter()
         img = self.model_images(frames)
         t_adapt = (time.perf_counter() - t0) * 1e3
-        res = self.client.infer(img, ego_vector(ego), route_goal(ego, self.goal_horizon_s, self.goal_min_speed))
+        goal = route_goal(ego, self.goal_horizon_s, self.goal_min_speed)
+        res = self.client.infer(img, ego_vector(ego), goal)
         traj = resample_traj(np.asarray(res["traj"]), self.dt, self.horizon, self.center_offset_m)
         self.n_calls += 1
         res["latency_ms"]["adapter"] = t_adapt
         self.last = {"k": res["k"], "agg": res["agg"], "latency_ms": res["latency_ms"], "traj20": res["traj"]}
         now = getattr(sim, "t", None)
+        # what the model was told and what it chose, per call: the goal is the only navigation input it has
+        self.calls.append({"t": None if now is None else round(float(now), 2), "v": round(float(ego.v), 2),
+                           "d": round(float(getattr(ego, "d", 0.0)), 2), "goal": [round(float(g), 2) for g in goal],
+                           "k": res["k"], "plan_end": [round(c, 2) for c in traj[-1]]})
         self._plan = None if now is None else self._store_plan(now, ego, traj)
         return {"traj": traj, "dt": self.dt}
 

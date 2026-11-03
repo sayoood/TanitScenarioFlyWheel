@@ -1,0 +1,286 @@
+{
+  "meta": {
+    "id": "uc1_protected_left_turn",
+    "title": "Protected-green left turn from the left-turn lane at a signalized 4-way intersection",
+    "description": "Generate data from a scenario where the ego vehicle in the left-turn lane turns left in an intersection with traffic light at day in good weather conditions with vehicles surrounding.",
+    "source": "text",
+    "polarity": "positive",
+    "tags": [
+      "urban",
+      "intersection",
+      "traffic_light",
+      "left_turn",
+      "day",
+      "clear"
+    ]
+  },
+  "environment": {
+    "time_of_day": "11:30",
+    "weather": "clear",
+    "cloud_cover": 0.15,
+    "road_surface": "dry"
+  },
+  "road": {
+    "type": "junction",
+    "signalized": true,
+    "signal_plan": {
+      "green_s": 25,
+      "yellow_s": 3,
+      "all_red_s": 2,
+      "protected_left": true,
+      "initial_phase_offset_s": 80
+    },
+    "corner_radius": 12,
+    "approaches": [
+      {
+        "heading_deg": 0,
+        "length": 180,
+        "speed_limit_kph": 50,
+        "inbound": {
+          "driving_lanes": 2
+        },
+        "outbound": {
+          "driving_lanes": 2
+        }
+      },
+      {
+        "heading_deg": 90,
+        "length": 180,
+        "speed_limit_kph": 50,
+        "inbound": {
+          "driving_lanes": 2
+        },
+        "outbound": {
+          "driving_lanes": 2
+        }
+      },
+      {
+        "heading_deg": 180,
+        "length": 200,
+        "speed_limit_kph": 50,
+        "inbound": {
+          "driving_lanes": 2
+        },
+        "outbound": {
+          "driving_lanes": 2
+        }
+      },
+      {
+        "heading_deg": 270,
+        "length": 180,
+        "speed_limit_kph": 50,
+        "inbound": {
+          "driving_lanes": 2
+        },
+        "outbound": {
+          "driving_lanes": 2
+        }
+      }
+    ]
+  },
+  "actors": [
+    {
+      "id": "ego",
+      "role": "ego",
+      "category": "car",
+      "color": "white",
+      "initial": {
+        "road": 2,
+        "direction": "inbound",
+        "lane": 1,
+        "s": 140
+      },
+      "initial_speed": 12.5,
+      "route": [
+        "left"
+      ]
+    },
+    {
+      "id": "lead_right",
+      "category": "van",
+      "color": "blue",
+      "initial": {
+        "road": 2,
+        "direction": "inbound",
+        "lane": 2,
+        "s": 115
+      },
+      "initial_speed": 12.0,
+      "route": [
+        "straight"
+      ]
+    },
+    {
+      "id": "follow_left",
+      "category": "suv",
+      "color": "black",
+      "initial": {
+        "road": 2,
+        "direction": "inbound",
+        "lane": 1,
+        "s": 175
+      },
+      "initial_speed": 11.0,
+      "route": [
+        "left"
+      ]
+    },
+    {
+      "id": "oncoming_1",
+      "category": "car",
+      "color": "red",
+      "initial": {
+        "road": 0,
+        "direction": "inbound",
+        "lane": 2,
+        "s": 120
+      },
+      "initial_speed": 13.0,
+      "route": [
+        "straight"
+      ]
+    },
+    {
+      "id": "oncoming_2",
+      "category": "truck",
+      "color": "white",
+      "initial": {
+        "road": 0,
+        "direction": "inbound",
+        "lane": 2,
+        "s": 165
+      },
+      "initial_speed": 11.5,
+      "route": [
+        "straight"
+      ]
+    },
+    {
+      "id": "cross_north",
+      "category": "car",
+      "color": "grey",
+      "initial": {
+        "road": 1,
+        "direction": "inbound",
+        "lane": 1,
+        "s": 60
+      },
+      "initial_speed": 8.0,
+      "route": [
+        "straight"
+      ]
+    },
+    {
+      "id": "cross_south",
+      "category": "bus",
+      "color": "yellow",
+      "initial": {
+        "road": 3,
+        "direction": "inbound",
+        "lane": 2,
+        "s": 70
+      },
+      "initial_speed": 8.0,
+      "route": [
+        "right"
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "ego_slow",
+      "actor": "ego",
+      "type": "speed_change",
+      "target_speed": 7.0,
+      "accel": 1.5,
+      "start": {
+        "kind": "distance_to_stop_line",
+        "actor": "ego",
+        "distance": 45
+      }
+    },
+    {
+      "id": "lead_keep",
+      "actor": "lead_right",
+      "type": "speed_change",
+      "target_speed": 12.0,
+      "accel": 1.0
+    },
+    {
+      "id": "follow_gap",
+      "actor": "follow_left",
+      "type": "follow",
+      "target": "ego",
+      "time_gap": 2.0,
+      "start": {
+        "kind": "sim_time",
+        "t": 0.5
+      }
+    },
+    {
+      "id": "north_stop",
+      "actor": "cross_north",
+      "type": "stop_at_line",
+      "decel": 2.0
+    },
+    {
+      "id": "south_stop",
+      "actor": "cross_south",
+      "type": "stop_at_line",
+      "decel": 1.8
+    }
+  ],
+  "assertions": [
+    {
+      "kind": "ego_turn",
+      "label": "left"
+    },
+    {
+      "kind": "no_collision"
+    },
+    {
+      "kind": "min_ttc_above",
+      "value": 1.5
+    },
+    {
+      "kind": "red_light_respected"
+    },
+    {
+      "kind": "max_decel_below",
+      "value": 4.0
+    }
+  ],
+  "parameters": [
+    {
+      "name": "ego_speed",
+      "path": "/actors/0/initial_speed",
+      "distribution": "uniform",
+      "low": 9.0,
+      "high": 15.0
+    },
+    {
+      "name": "time_of_day",
+      "path": "/environment/time_of_day",
+      "distribution": "choice",
+      "choices": [
+        "07:30",
+        "11:30",
+        "17:45",
+        "20:30"
+      ]
+    },
+    {
+      "name": "weather",
+      "path": "/environment/weather",
+      "distribution": "choice",
+      "choices": [
+        "clear",
+        "cloudy",
+        "rain",
+        "fog"
+      ]
+    }
+  ],
+  "duration": 40.0,
+  "dt": 0.05
+}

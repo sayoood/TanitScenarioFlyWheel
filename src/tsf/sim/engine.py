@@ -605,6 +605,11 @@ class TanitSim:
             if ag.path is None:
                 continue
             if ag.external:
+                # the policy drives, but the lane change action still ends on its clock, so actions chained after it
+                # (UC1: follow_left follows the ego once its lane change is over) start as scripted
+                if ag.lc and t + dt - ag.lc["t0"] >= ag.lc["T"]:
+                    self._end_action(ag.lc["id"], ag.id)
+                    ag.lc = None
                 continue
             gap, vl, lid = self._leader_gap(ag)
             T = ag.time_gap if ag.follow_target and lid == ag.follow_target else ag.headway
@@ -740,7 +745,7 @@ def metrics(sim: TanitSim, log: SimLog) -> dict:
                 min_ttc, min_ttc_actor = ttc, sb.id
     acc = S[:, e, 4]
     jerk = np.diff(acc) / sim.dt if n > 1 else np.zeros(1)
-    lane_seq = [ln[e] for ln in log.lanes]
+    lane_seq = _physical_lanes(sim, log, e)
     lane_changes, turns = 0, []
     prev = lane_seq[0]
     for k in lane_seq[1:]:
@@ -764,6 +769,22 @@ def metrics(sim: TanitSim, log: SimLog) -> dict:
         "ego_lane_changes_left": lane_changes, "ego_turns": turns,
         "red_light_violations": red_violation,
     }
+
+
+def _physical_lanes(sim: TanitSim, log: SimLog, e: int) -> list:
+    """The lane agent ``e`` is in per tick, from its lateral offset to its route lane rather than from the route itself.
+    A lane change switches the route at its start; a closed-loop ego that never follows it stays more than half a lane
+    width off the new lane (REFe held d = -3 m through a whole 40 s run) and must not be credited with the change."""
+    out = []
+    for i, ln in enumerate(log.lanes):
+        k = ln[e]
+        lane = sim.m.lanes.get(k) if k is not None else None
+        d = float(log.states[i, e, 5])
+        if lane is not None and abs(d) > 0.5 * float(np.median(lane.width)):
+            nb = lane.left if d > 0 else lane.right
+            k = nb if nb is not None else k
+        out.append(k)
+    return out
 
 
 def _red_violations(sim: TanitSim, log: SimLog, e: int) -> list[float]:

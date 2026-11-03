@@ -257,6 +257,8 @@ def run_t1(tsir: dict, policy, out: str | Path, seconds: float | None = None, ca
                "policy_calls": getattr(policy, "n_calls", None), "fallback_ticks": getattr(policy, "n_fallback", None),
                "timing": sensors.timing}
     (out / "t1_summary.json").write_text(json.dumps(summary, indent=1, default=float))
+    if getattr(policy, "calls", None):
+        (out / "refe_calls.json").write_text(json.dumps(policy.calls, default=float))
     return res_
 
 
