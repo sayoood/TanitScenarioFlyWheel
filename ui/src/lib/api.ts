@@ -29,6 +29,14 @@ export interface FlywheelApi {
   /** Absolute URL of an artifact (usable in <video src> or <a download>). */
   artifactUrl(runId: string, name: string): string;
   artifactText(runId: string, name: string): Promise<string>;
+  /** URL of a file inside the run directory (sensor videos, WSM controls); `download` only for synthetic runs. */
+  runFileUrl(runId: string, path: string, download?: boolean): string;
+  /** Generated LiDAR sweep: float32 [x, y, z, intensity] per point, sensor frame (x forward, y left, z up). */
+  lidarSweep(runId: string, index: number, every?: number): Promise<Float32Array>;
+  /** Dashcam2Scenario source clip (streamed). */
+  sourceVideoUrl(runId: string): string;
+  /** Zip of the run's sensor data (synthetic runs only). */
+  sensorsZipUrl(runId: string): string;
   getHarness(): Promise<HarnessState>;
   putKnobs(agent: string, knobs: AgentKnobs): Promise<void>;
   setLessonStatus(id: string, status: Exclude<LessonStatus, "candidate">): Promise<Lesson | void>;

@@ -1,5 +1,5 @@
-import { ArrowLeft, Box, Camera, Code2, Copy, FileJson, ListChecks, Radar, Sparkles, Workflow } from "lucide-react";
-import { useEffect, useMemo, type ReactNode } from "react";
+import { ArrowLeft, Box, Camera, Code2, Copy, FileJson, ListChecks, Lock, Radar, Sparkles, Workflow } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, type ReactNode } from "react";
 import { Link, useParams } from "react-router";
 import { StatusChip, UcBadge } from "../components/common";
 import { AugmentPanel } from "../components/run/AugmentPanel";
@@ -10,6 +10,7 @@ import { LadderViz } from "../components/run/LadderViz";
 import { MetricsPanel } from "../components/run/MetricsPanel";
 import { Playback, PlaybackContext } from "../components/run/playback";
 import { SceneViewer } from "../components/run/SceneViewer";
+import { SensorStreams, Transport, useVideoSync } from "../components/run/SensorStreams";
 import { StageTimeline } from "../components/run/StageTimeline";
 import { CodeBlock } from "../components/run/CodeBlock";
 import { Chip, EmptyState, Panel, Skeleton } from "../components/ui/primitives";
@@ -18,6 +19,9 @@ import { displayTitle, ucMeta } from "../lib/meta";
 import { useRun, useScene } from "../lib/hooks";
 import { useApi } from "../lib/provider";
 import type { RunDetail } from "../lib/types";
+
+// three.js stays out of the run page chunk until a run has LiDAR sweeps
+const LidarViewer = lazy(() => import("../components/run/LidarViewer"));
 
 function SceneSection({ run }: { run: RunDetail }) {
   const simulated = run.stages.find((s) => s.name === "simulate")?.status === "ok";
@@ -53,30 +57,86 @@ function SceneSection({ run }: { run: RunDetail }) {
       <Panel id="scene" eyebrow="Interactive" title="Scene viewer" actions={scene.data && <Chip>{scene.data.actors.length} actors · {scene.data.t.length} samples</Chip>} className="scroll-mt-24">
         {sceneBody}
       </Panel>
-      <Panel id="cameras" eyebrow="Cosmos 3 Transfer" title="Multi-camera video" className="mt-5 scroll-mt-24">
-        <CameraGrid run={run} scene={scene.data} />
-      </Panel>
+      {run.sensor_data ? (
+        <Panel id="cameras" eyebrow="Cosmos3 Sim-Auto" title="Camera streams and WSM controls" className="mt-5 scroll-mt-24">
+          <SensorStreams run={run} data={run.sensor_data} />
+        </Panel>
+      ) : (
+        <Panel id="cameras" eyebrow="Sensor preview" title="Multi-camera video" className="mt-5 scroll-mt-24">
+          <CameraGrid run={run} scene={scene.data} />
+        </Panel>
+      )}
     </PlaybackContext.Provider>
   );
 }
 
-/** Camera + LiDAR registered by the sensors stage (mosaic.mp4, lidar_bev.mp4, sensors.json). */
+/** Dashcam2Scenario: the source clip next to the generated front camera, or the TanitSim BEV before sensors exist. */
+function SourceSection({ run }: { run: RunDetail }) {
+  const { api } = useApi();
+  const sync = useVideoSync();
+  const front = run.sensor_data?.cameras.find((c) => c.name === "front_wide") ?? run.sensor_data?.cameras[0];
+  const t0 = front ? run.sensor_data?.t0_s ?? 0 : 0;
+  const { refAt } = sync;
+  const sourceRef = useMemo(() => refAt(t0), [refAt, t0]);
+  if (!run.source_video) return null;
+  const other = front
+    ? { src: api.runFileUrl(run.id, front.generated), label: `Generated ${front.name}` }
+    : run.artifacts.some((a) => a.name === "bev.mp4") ? { src: api.artifactUrl(run.id, "bev.mp4"), label: "TanitSim BEV of the lifted scenario" } : null;
+  return (
+    <Panel id="source" eyebrow="Dashcam2Scenario" title="Original dash-cam vs generated" className="mt-5 scroll-mt-24"
+      actions={<Chip title="The source clip is streamed from the Thor and never downloaded"><Lock size={11} /> Thor only</Chip>}>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <figure className="m-0">
+          {/* the scenario clock is the clip clock: the source runs t0 ahead of the generated window */}
+          <video ref={sourceRef} className="w-full rounded-lg border border-line bg-black"
+            src={api.sourceVideoUrl(run.id)} muted playsInline preload="auto" />
+          <figcaption className="mt-1 text-[11.5px] text-fg-2">Original clip ({run.input?.video})</figcaption>
+        </figure>
+        {other && (
+          <figure className="m-0">
+            <video ref={sync.ref} className="w-full rounded-lg border border-line bg-black" src={other.src} muted playsInline preload="auto" />
+            <figcaption className="mt-1 text-[11.5px] text-fg-2">{other.label}</figcaption>
+          </figure>
+        )}
+      </div>
+      <div className="mt-3">
+        <Transport sync={sync} t0={t0} label="clip time" />
+      </div>
+    </Panel>
+  );
+}
+
+/** LiDAR of the sensors stage: interactive 3D sweeps plus the overview videos (mosaic, BEV, range images). */
 function SensorsSection({ run }: { run: RunDetail }) {
   const { api } = useApi();
   const has = (n: string) => run.artifacts.some((a) => a.name === n);
-  if (!has("mosaic.mp4")) return null;
+  const sd = run.sensor_data;
+  if (!has("mosaic.mp4") && !sd) return null;
   return (
-    <Panel id="sensors" eyebrow="Cosmos 3 Sim-Auto" title="Camera and LiDAR" className="mt-5 scroll-mt-24"
+    <Panel id="sensors" eyebrow="Cosmos3 Sim-Auto" title="LiDAR and overview" className="mt-5 scroll-mt-24"
       actions={has("sensors.json") && <a className="btn btn-sm" href={api.artifactUrl(run.id, "sensors.json")} target="_blank" rel="noreferrer">sensors.json</a>}>
-      <div className="grid gap-3 lg:grid-cols-2">
-        <figure className="m-0">
-          <video className="w-full rounded-lg border border-line bg-black" src={api.artifactUrl(run.id, "mosaic.mp4")} controls loop muted playsInline preload="metadata" />
-          <figcaption className="mt-1 text-[11.5px] text-fg-2">Cameras, LiDAR views and TanitSim BEV</figcaption>
-        </figure>
+      {sd?.lidar && (
+        <Suspense fallback={<Skeleton className="h-[560px]" />}>
+          <LidarViewer runId={run.id} sweeps={sd.lidar.sweeps} hz={sd.lidar.hz} t0={sd.t0_s} />
+        </Suspense>
+      )}
+      <div className="mt-4 grid gap-3 lg:grid-cols-3">
+        {has("mosaic.mp4") && (
+          <figure className="m-0">
+            <video className="w-full rounded-lg border border-line bg-black" src={api.artifactUrl(run.id, "mosaic.mp4")} controls loop muted playsInline preload="metadata" />
+            <figcaption className="mt-1 text-[11.5px] text-fg-2">Mosaic: cameras, LiDAR views and TanitSim BEV</figcaption>
+          </figure>
+        )}
         {has("lidar_bev.mp4") && (
           <figure className="m-0">
             <video className="w-full rounded-lg border border-line bg-black" src={api.artifactUrl(run.id, "lidar_bev.mp4")} controls loop muted playsInline preload="metadata" />
             <figcaption className="mt-1 text-[11.5px] text-fg-2">Generated LiDAR, bird's-eye view</figcaption>
+          </figure>
+        )}
+        {sd?.lidar?.range_compare && (
+          <figure className="m-0">
+            <video className="w-full rounded-lg border border-line bg-black" src={api.runFileUrl(run.id, sd.lidar.range_compare)} controls loop muted playsInline preload="metadata" />
+            <figcaption className="mt-1 text-[11.5px] text-fg-2">LiDAR range image: WSM control / generated / intensity</figcaption>
           </figure>
         )}
       </div>
@@ -203,6 +263,7 @@ export default function RunDetailPage() {
           </div>
         </div>
 
+        <SourceSection run={r} />
         <SceneSection run={r} />
         <SensorsSection run={r} />
 

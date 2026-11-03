@@ -73,6 +73,15 @@ export class LiveApi implements FlywheelApi {
     if (!res.ok) throw new ApiError(`${res.status} ${res.statusText}`, res.status);
     return res.text();
   }
+  runFileUrl = (runId: string, path: string, download = false) =>
+    this.url(`/api/runs/${encodeURIComponent(runId)}/files/${path.split("/").map(encodeURIComponent).join("/")}${download ? "?download=true" : ""}`);
+  async lidarSweep(runId: string, index: number, every = 1): Promise<Float32Array> {
+    const res = await fetch(this.url(`/api/runs/${encodeURIComponent(runId)}/lidar/${index}?every=${every}`));
+    if (!res.ok) throw new ApiError(`${res.status} ${res.statusText}`, res.status);
+    return new Float32Array(await res.arrayBuffer());
+  }
+  sourceVideoUrl = (runId: string) => this.url(`/api/runs/${encodeURIComponent(runId)}/source.mp4`);
+  sensorsZipUrl = (runId: string) => this.url(`/api/runs/${encodeURIComponent(runId)}/sensors.zip`);
   getHarness = () => this.req<HarnessState>("/api/harness");
   putKnobs = (agent: string, knobs: AgentKnobs) =>
     this.req<void>("/api/harness/knobs", { method: "PUT", body: JSON.stringify({ agent, knobs }) });

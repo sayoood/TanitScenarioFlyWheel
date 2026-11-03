@@ -4,20 +4,22 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
+import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from tsf.agents.harness import ROOT as HARNESS_ROOT, Harness
-from tsf.server.runs import ROOT, RUNS, Store, summary
+from tsf.server.runs import _RENDER_CAMS, ROOT, RUNS, Store, summary
 
 LLM_URL = os.environ.get("TSF_LLM_URL", "http://127.0.0.1:8000/v1")
 COSMOS = {"cosmos_sim": os.environ.get("TSF_COSMOS_SIM_URL", "http://127.0.0.1:8001"),
@@ -153,6 +155,11 @@ def get_run(rid: str):
     videos = [a["name"] for a in run.get("artifacts", []) if a["kind"] == "video" and a["name"].startswith("cam_")]
     if videos:
         run["cameras"] = [{"name": v[4:-4], "artifact": v} for v in videos]
+    sd = _sensor_data(rid, run)
+    if sd:
+        run["sensor_data"] = sd
+    if _source_video(run):
+        run["source_video"] = True
     kids = _augmentations(rid)
     if kids:
         run["augmentations"] = kids       # child augmentation jobs of this run (newest first)
@@ -209,6 +216,121 @@ def get_artifact(rid: str, name: str):
     if p.parent != store.path(rid) or not p.is_file():
         raise HTTPException(404, name)
     return FileResponse(p)
+
+
+# ---- sensor data of a run (sensors stage, tsf.cosmos.pipeline.render_sensors) -------------------------------------
+# Runs built from a dataset, an incident or a video clip stay on the Thor: their files are streamed to the console,
+# never offered as downloads (the rule of the evidence page).
+_STREAM = {".mp4", ".json", ".png", ".jpg"}
+_DOWNLOAD = _STREAM | {".npz", ".npy", ".tar", ".xodr", ".xosc", ".osc"}
+
+
+def _public(run: dict) -> bool:
+    """Only synthetic runs (UC1 text queries and augmentations of them) may leave the Thor as files."""
+    if run.get("uc") == "uc1":
+        return True
+    parent = (run.get("input") or {}).get("parent_run")
+    if run.get("uc") == "augment" and parent:
+        try:
+            return store.get(parent).get("uc") == "uc1"
+        except KeyError:
+            return False
+    return False
+
+
+def _sensor_data(rid: str, run: dict) -> dict | None:
+    """Per-camera generated videos with their WSM control videos, and the LiDAR sweeps, as run-relative paths."""
+    d = store.path(rid)
+    s = d / "sensors"
+    gen = sorted((s / "cosmos").glob("camera_*.mp4"),
+                 key=lambda p: _RENDER_CAMS.index(p.stem) if p.stem in _RENDER_CAMS else len(_RENDER_CAMS))
+    if not gen:
+        return None
+    cams = []
+    for v in gen:
+        ctrl = sorted((s / "wsm" / "world_scenario" / f"ftheta_{v.stem}").glob("*.mp4"))
+        cams.append({"name": re.sub(r"_\d+fov$", "", v.stem.removeprefix("camera_")), "rig": v.stem,
+                     "generated": v.relative_to(d).as_posix(), "control": ctrl[0].relative_to(d).as_posix() if ctrl else None})
+    sweeps = len(list((s / "lidar" / "pointclouds").glob("sweep_*.npz")))
+    rc = s / "lidar" / "lidar_range_compare.mp4"
+    info = run.get("sensors") or {}
+    return {"public": _public(run), "fps": 30, "frames": info.get("frames"), "t0_s": info.get("t0_s", 0.0), "cameras": cams,
+            "lidar": {"sweeps": sweeps, "hz": 10, "range_compare": rc.relative_to(d).as_posix() if rc.exists() else None}
+            if sweeps else None}
+
+
+def _source_video(run: dict) -> Path | None:
+    v = (run.get("input") or {}).get("video")
+    if run.get("uc") != "uc2" or not v:
+        return None
+    try:
+        from tsf.agents.video import resolve
+        p = resolve(v)
+    except Exception:  # noqa: BLE001 - clip not on this Thor
+        return None
+    return p if p.is_file() else None
+
+
+@app.get("/api/runs/{rid}/files/{path:path}")
+def run_file(rid: str, path: str, download: bool = False):
+    """A file inside the run directory (sensor videos, WSM controls, LiDAR sweeps). Streamed for every run;
+    ``download=true`` and the raw formats (.npz, .tar, ...) only for synthetic runs."""
+    run = _run(rid)
+    root = store.path(rid).resolve()
+    p = (root / path).resolve()
+    pub = _public(run)
+    if root not in p.parents or not p.is_file() or p.suffix not in (_DOWNLOAD if pub else _STREAM) or p.name == "run.json":
+        raise HTTPException(404, path)
+    if download and not pub:
+        raise HTTPException(403, "derived from a dataset, incident or video clip: streamed only, it stays on the Thor")
+    return FileResponse(p, filename=p.name if download else None)
+
+
+@app.get("/api/runs/{rid}/lidar/{i}")
+def lidar_sweep(rid: str, i: int, every: int = Query(1, ge=1, le=16)):
+    """Generated LiDAR sweep ``i`` for the 3D viewer: little-endian float32 [x, y, z, intensity] per point, sensor
+    frame in metres (x forward, y left, z up), intensity 0..1; ``every`` keeps every n-th point."""
+    import numpy as np
+    _run(rid)
+    sw = sorted((store.path(rid) / "sensors" / "lidar" / "pointclouds").glob("sweep_*.npz"))
+    if not 0 <= i < len(sw):
+        raise HTTPException(404, f"sweep {i} (run has {len(sw)})")
+    z = np.load(sw[i])
+    a = np.concatenate([z["xyz"][::every], z["intensity"][::every, None]], 1).astype("<f4")
+    return Response(a.tobytes(), media_type="application/octet-stream", headers={"Cache-Control": "max-age=3600"})
+
+
+@app.get("/api/runs/{rid}/source.mp4")
+def source_video(rid: str):
+    """The dash-cam clip a Dashcam2Scenario run was lifted from: streamed for comparison, never a download."""
+    p = _source_video(_run(rid))
+    if not p:
+        raise HTTPException(404, "no source video for this run")
+    return FileResponse(p, media_type="video/mp4")
+
+
+@app.get("/api/runs/{rid}/sensors.zip")
+def sensors_zip(rid: str):
+    """Camera videos, WSM controls, LiDAR sweeps (.npz), captions, RDS-HQ calibration and poses of a synthetic run."""
+    run = _run(rid)
+    if not _public(run):
+        raise HTTPException(403, "derived from a dataset, incident or video clip: streamed only, it stays on the Thor")
+    d = store.path(rid)
+    s = d / "sensors"
+    if not (s / "sensors.json").exists():
+        raise HTTPException(404, "this run has no sensor data")
+    out = s / "bundle.zip"
+    if not out.exists() or out.stat().st_mtime < (s / "sensors.json").stat().st_mtime:
+        files = [*s.glob("cosmos/camera_*.mp4"), *s.glob("wsm/world_scenario/*/*.mp4"), *s.glob("lidar/pointclouds/*.npz"),
+                 *s.glob("lidar/*.mp4"), *s.glob("lidar/lidar_checks.json"), *s.glob("captions/*.json"),
+                 *s.glob("rds_hq/*/*"), s / "sensors.json", d / "tsir.json"]
+        tmp = out.with_suffix(".tmp")
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zf:      # mp4 and npz are compressed already
+            for f in files:
+                if f.is_file():
+                    zf.write(f, f.relative_to(d).as_posix())
+        tmp.replace(out)
+    return FileResponse(out, filename=f"{rid}_sensors.zip", media_type="application/zip")
 
 
 @app.get("/api/runs/{rid}/scene")

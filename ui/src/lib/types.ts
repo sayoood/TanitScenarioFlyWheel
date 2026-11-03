@@ -236,8 +236,22 @@ export interface RunDetail extends RunSummary {
   metrics: Record<string, any>;
   artifacts: Artifact[];
   cameras?: { name: string; artifact: string }[];
+  /** Per-camera streams and LiDAR sweeps of the sensors stage (paths relative to the run directory). */
+  sensor_data?: SensorData;
+  /** Dashcam2Scenario: the source clip is streamable at /api/runs/{id}/source.mp4. */
+  source_video?: boolean;
   package?: any;
   llm?: { calls: number; tok_per_s: number };
+}
+
+export interface SensorData {
+  /** Synthetic run: raw files and the bundle may be downloaded. Otherwise streamed only (stays on the Thor). */
+  public: boolean;
+  fps: number;
+  frames: number;
+  t0_s: number;
+  cameras: { name: string; rig: string; generated: string; control: string | null }[];
+  lidar: { sweeps: number; hz: number; range_compare: string | null } | null;
 }
 
 export interface Scene {
@@ -263,6 +277,8 @@ export interface RenderOptions {
   res: string;
   frames: number;
   lidar: boolean;
+  /** Scenario time of the first generated frame (s); the Thor clamps it to the scenario. */
+  t0?: number;
 }
 export interface ClosedLoopOptions {
   policy: "refe_sft4" | "const_vel" | "accel_decel" | (string & {});

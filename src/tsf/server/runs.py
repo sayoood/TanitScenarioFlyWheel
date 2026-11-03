@@ -361,8 +361,11 @@ def _sensors_from_render(r) -> dict | None:
         return None
     r = r if isinstance(r, dict) else {}
     n = max(1, min(int(r.get("views", 3)), len(_RENDER_CAMS)))
-    return {"cameras": list(_RENDER_CAMS[:n]), "frames": int(r.get("frames", 97)), "lidar": bool(r.get("lidar", True)),
-            "res": str(r.get("res", "480")).removesuffix("p")}
+    so = {"cameras": list(_RENDER_CAMS[:n]), "frames": int(r.get("frames", 97)), "lidar": bool(r.get("lidar", True)),
+          "res": str(r.get("res", "480")).removesuffix("p")}
+    if r.get("t0") is not None:
+        so["t0"] = float(r["t0"])
+    return so
 
 
 def _sensors(ctx: Ctx, tsir: dict, so: dict):
@@ -381,6 +384,11 @@ def _sensors(ctx: Ctx, tsir: dict, so: dict):
         return
     cams = tuple(so["cameras"]) if so.get("cameras") else None
     frames, lidar, wait_s = int(so.get("frames", 97)), bool(so.get("lidar", True)), float(so.get("wait_s", 0))
+    dur = float(tsir.get("duration") or 0)
+    if dur:                                   # fit the window into the scenario: Sim-Auto takes 4k+1 frames at 30 fps
+        frames = min(frames, (int(dur * 30) - 1) // 4 * 4 + 1)
+        if so.get("t0") is not None:
+            so = {**so, "t0": round(max(0.0, min(float(so["t0"]), dur - frames / 30)), 2)}
     t_wait, info = time.perf_counter(), {}
     busy = getattr(pipeline, "CosmosBusyError", ())
     while True:

@@ -233,17 +233,21 @@ export default function Studio() {
                 <Field label="Resolution">
                   <Segmented label="Resolution" value={ren.res} onChange={(res) => setRen((r) => ({ ...r, res }))} options={RESOLUTIONS.map((r) => ({ value: r, label: r }))} />
                 </Field>
-                <Field label={<>Frames: <span className="num text-fg">{ren.frames}</span></>}>
+                <Field label={<>Frames: <span className="num text-fg">{ren.frames}</span> ({(ren.frames / 30).toFixed(1)} s at 30 fps)</>}
+                  hint="Longer clips are generated as chained 49-frame windows: time grows linearly and the image drifts slowly.">
                   <div className="flex items-center gap-3">
-                    <Slider label="Frames" value={ren.frames} min={25} max={241} step={4} onChange={(frames) => setRen((r) => ({ ...r, frames }))} />
+                    <Slider label="Frames" value={ren.frames} min={25} max={601} step={4} onChange={(frames) => setRen((r) => ({ ...r, frames }))} />
                   </div>
                   <div className="mt-2 flex gap-1.5">
-                    {[61, 93, 121, 241].map((f) => (
+                    {[97, 241, 481, 601].map((f) => (
                       <button key={f} className="btn btn-sm !h-6 !px-2 mono" onClick={() => setRen((r) => ({ ...r, frames: f }))}>
-                        {f}
+                        {f / 30 < 4 ? f : `${Math.round(f / 30)} s`}
                       </button>
                     ))}
                   </div>
+                </Field>
+                <Field label={<>Start at: <span className="num text-fg">{(ren.t0 ?? 0).toFixed(1)} s</span></>} hint="Scenario time of the first frame; the Thor fits the window into the scenario.">
+                  <Slider label="Start at" value={ren.t0 ?? 0} min={0} max={40} step={0.5} onChange={(t0) => setRen((r) => ({ ...r, t0 }))} />
                 </Field>
               </div>
             </div>

@@ -104,3 +104,45 @@ def test_studio_render_options_start_the_sensors_stage():
     assert so == {"cameras": ["camera_front_wide_120fov", "camera_cross_left_120fov", "camera_cross_right_120fov"],
                   "frames": 121, "lidar": False, "res": "720"}
     assert len(_sensors_from_render({"views": 99})["cameras"]) == 7
+
+
+def test_sensor_streams_lidar_and_download_policy(tmp_path, monkeypatch):
+    """Sensor files are listed per camera with their WSM control; LiDAR sweeps come as float32 xyz+intensity;
+    raw files and the bundle download only for synthetic (UC1) runs, dataset-derived runs are streamed only."""
+    import importlib
+    import json
+
+    import numpy as np
+    monkeypatch.setenv("TSF_RUNS", str(tmp_path))
+    import tsf.server.runs as runs
+    importlib.reload(runs)
+    import tsf.server.app as appmod
+    importlib.reload(appmod)
+    for rid, uc in (("run_uc1", "uc1"), ("run_uc4", "uc4")):
+        d = tmp_path / rid
+        s = d / "sensors"
+        (s / "cosmos").mkdir(parents=True)
+        (s / "cosmos" / "camera_front_wide_120fov.mp4").write_bytes(b"v")
+        (s / "wsm" / "world_scenario" / "ftheta_camera_front_wide_120fov").mkdir(parents=True)
+        (s / "wsm" / "world_scenario" / "ftheta_camera_front_wide_120fov" / "c_0.mp4").write_bytes(b"w")
+        (s / "lidar" / "pointclouds").mkdir(parents=True)
+        np.savez(s / "lidar" / "pointclouds" / "sweep_000.npz", xyz=np.ones((5, 3), np.float32),
+                 intensity=np.full(5, 0.5, np.float32), frame=np.int64(0))
+        (s / "sensors.json").write_text("{}")
+        (d / "run.json").write_text(json.dumps({"id": rid, "uc": uc, "status": "ok", "created": "2026-11-02T00:00:00",
+                                                "input": {}, "options": {}, "stages": [], "attempts": [], "metrics": {},
+                                                "artifacts": [], "kpis": {}, "sensors": {"frames": 97, "t0_s": 0.0}}))
+    with TestClient(appmod.app) as c:
+        sd = c.get("/api/runs/run_uc1").json()["sensor_data"]
+        assert sd["public"] and sd["cameras"][0]["name"] == "front_wide" and sd["lidar"]["sweeps"] == 1
+        assert c.get(f"/api/runs/run_uc1/files/{sd['cameras'][0]['control']}").content == b"w"
+        a = np.frombuffer(c.get("/api/runs/run_uc1/lidar/0").content, "<f4").reshape(-1, 4)
+        assert a.shape == (5, 4) and a[0, 3] == 0.5
+        assert c.get("/api/runs/run_uc1/sensors.zip").status_code == 200
+        assert c.get("/api/runs/run_uc1/files/sensors/lidar/pointclouds/sweep_000.npz").status_code == 200
+        assert c.get("/api/runs/run_uc4").json()["sensor_data"]["public"] is False
+        assert c.get("/api/runs/run_uc4/files/sensors/cosmos/camera_front_wide_120fov.mp4").status_code == 200
+        assert c.get("/api/runs/run_uc4/files/sensors/cosmos/camera_front_wide_120fov.mp4?download=true").status_code == 403
+        assert c.get("/api/runs/run_uc4/files/sensors/lidar/pointclouds/sweep_000.npz").status_code == 404
+        assert c.get("/api/runs/run_uc4/sensors.zip").status_code == 403
+        assert c.get("/api/runs/run_uc1/files/../run_uc4/run.json").status_code == 404

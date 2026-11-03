@@ -416,6 +416,23 @@ export class MockApi implements FlywheelApi {
     return `mock://${runId}/${name}`;
   }
 
+  // mock runs carry no sensor_data / source_video, so these are never rendered
+  runFileUrl(runId: string, path: string): string {
+    return `mock://${runId}/${path}`;
+  }
+
+  async lidarSweep(): Promise<Float32Array> {
+    return new Float32Array();
+  }
+
+  sourceVideoUrl(runId: string): string {
+    return `mock://${runId}/source.mp4`;
+  }
+
+  sensorsZipUrl(runId: string): string {
+    return `mock://${runId}/sensors.zip`;
+  }
+
   async artifactText(runId: string, name: string): Promise<string> {
     const r = this.recs.get(runId);
     if (!r) throw new ApiError(`404 run ${runId} not found`, 404);
