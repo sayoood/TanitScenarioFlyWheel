@@ -8,7 +8,9 @@ generated from. Writes ``<run>/adherence/proj.json``:
                         "objects": [{"id", "type", "box": [u0, v0, u1, v1], "depth"}],
                         "heads":   [{"id", "state", "box", "depth", "facing"}]}}}
 
-Boxes are in pixels of the renderer's native camera size; objects with a corner behind the camera are left out.
+Boxes are in pixels of the renderer's native camera size. An object's box spans the points over its faces that lie in
+front of the camera, so a vehicle beside the camera (the one that fills the frame) keeps its box; heads with a corner
+behind the camera are left out.
 
     ~/tsf/venvs/wsm/bin/python src/tsf/cosmos/_adherence_project.py runs/t1/bench/b480
 """
@@ -22,10 +24,12 @@ from pathlib import Path
 import numpy as np
 
 
-def _box(cm, pts: np.ndarray, P: np.ndarray):
+def _box(cm, pts: np.ndarray, P: np.ndarray, partial: bool = False):
     xyd = np.asarray(cm.get_xy_and_depth(pts, P))
-    if (xyd[:, 2] <= 0.5).any():
+    front = xyd[:, 2] > 0.5
+    if not (front.any() if partial else front.all()):
         return None, None
+    xyd = xyd[front]
     u, v = xyd[:, 0], xyd[:, 1]
     if u.max() < 0 or v.max() < 0 or u.min() >= cm.width or v.min() >= cm.height:
         return None, None
@@ -35,9 +39,12 @@ def _box(cm, pts: np.ndarray, P: np.ndarray):
     return [round(float(x), 1) for x in box], round(float(xyd[:, 2].min()), 1)
 
 
-def _cuboid(lwh, T) -> np.ndarray:
+def _cuboid(lwh, T, n: int = 2) -> np.ndarray:
+    """Points of the cuboid's surface on an n x n grid per face (n=2: the 8 corners)."""
     l, w, h = lwh
-    loc = np.array([[sx * l / 2, sy * w / 2, sz * h / 2] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
+    g = np.linspace(-1, 1, n)
+    loc = np.array([[sx * l / 2, sy * w / 2, sz * h / 2] for sx in g for sy in g for sz in g
+                    if max(abs(sx), abs(sy), abs(sz)) == 1])
     T = np.asarray(T, float)
     return loc @ T[:3, :3].T + T[:3, 3]
 
@@ -71,7 +78,7 @@ def project_clip(rds: Path, clip: str) -> dict:
         P = pose[f"{last:06d}.pose.{cam}.npy"]
         rec = {"size": [int(cm.width), int(cm.height)], "frame": last, "objects": [], "heads": []}
         for oid, o in frame.items():
-            box, depth = _box(cm, _cuboid(o["object_lwh"], o["object_to_world"]), P)
+            box, depth = _box(cm, _cuboid(o["object_lwh"], o["object_to_world"], n=6), P, partial=True)
             if box:
                 rec["objects"].append({"id": oid, "type": o["object_type"], "box": box, "depth": depth})
         for fid, state, vtx, normal in heads:

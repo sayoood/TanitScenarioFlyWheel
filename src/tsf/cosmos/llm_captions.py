@@ -99,15 +99,18 @@ def _brief_actor(a: dict) -> dict:
 
 
 def llm_captions(tsir: dict, cameras=CAMERAS_7, *, frames: int = 297, fps: float = 30.0,
-                 appearance: dict | None = None, llm: LLM | None = None, report: dict | None = None) -> dict[str, str]:
-    """``report``: filled with the rule check ({issues_first, issues_final, repaired, stripped})."""
+                 appearance: dict | None = None, llm: LLM | None = None, road_users: bool = True,
+                 report: dict | None = None) -> dict[str, str]:
+    """``report``: filled with the rule check ({issues_first, issues_final, repaired, stripped}). ``road_users=False``:
+    the captions describe the road and its surroundings only, for a caller that names the vehicles in view per chunk
+    from the map (the T1 loop, :func:`tsf.closedloop.neural.vehicle_cast`)."""
     env = {**tsir.get("environment", {}), **(appearance or {})}
     bounds = _bounds(frames, fps, 3)
     brief = {"title": tsir["meta"]["title"], "description": tsir["meta"].get("description", ""), "environment": env,
              "road": _brief_road(tsir["road"]),
-             "actors": [_brief_actor(a) for a in tsir["actors"]],
+             "actors": [_brief_actor(a) for a in tsir["actors"] if road_users or a.get("role") == "ego"],
              "actions": [{k: a.get(k) for k in ("actor", "type", "start", "direction", "target_speed")}
-                         for a in tsir["actions"]],
+                         for a in tsir["actions"]] if road_users else [],
              "windows_s": [list(b) for b in bounds]}
     if tsir.get("static_objects"):        # signs, cones, barriers, parked vehicles: where they stand, what they look like
         brief["static_objects"] = [
@@ -129,12 +132,17 @@ def llm_captions(tsir: dict, cameras=CAMERAS_7, *, frames: int = 297, fps: float
              "state, and a guessed colour makes the generator paint it; you may say that traffic lights stand at the "
              "junction. Describe the surroundings, not the vehicle's own driving: do not say that it changes lanes, "
              "slows, stops, waits or turns, and do not say that other road users stop, wait or yield for it (a driving "
-             "policy decides that). Describe other road users by type, colour and position, with movements only as the "
-             "scenario's actions state them, and add no road users, cyclists or pedestrians the scenario does not "
-             "list. The map places every road user at every moment: do not guess where they have moved, whether they "
-             "have passed, or whether the road or junction is clear. Describe only what is there, never what is "
-             "absent. For each of the three time windows describe what is visible ahead, left, right and behind the "
-             "vehicle: the surroundings, and the listed road users in that direction by their look."}]
+             "policy decides that). " + (
+                 "Describe other road users by type, colour and position, with movements only as the "
+                 "scenario's actions state them, and add no road users, cyclists or pedestrians the scenario does not "
+                 "list. The map places every road user at every moment: do not guess where they have moved, whether "
+                 "they have passed, or whether the road or junction is clear. Describe only what is there, never what "
+                 "is absent. For each of the three time windows describe what is visible ahead, left, right and behind "
+                 "the vehicle: the surroundings, and the listed road users in that direction by their look."
+                 if road_users else
+                 "Leave all road users out (vehicles, cyclists, pedestrians): they are named separately for each "
+                 "moment. Describe only what is there, never what is absent. For each of the three time windows "
+                 "describe the surroundings visible ahead, left, right and behind the vehicle.")}]
     llm = llm or LLM()
     raw = llm.chat(msgs, schema=SceneCaption.model_json_schema(), role="captioner", max_tokens=3000)
     sc = SceneCaption.model_validate(raw)

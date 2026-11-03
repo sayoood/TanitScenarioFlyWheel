@@ -55,6 +55,39 @@ def signal_caption(sim: TanitSim, t0: float, t1: float, max_dist: float = 90.0) 
     return f"At the junction ahead, {say('the traffic light', 'straight')}."
 
 
+def _vehicle_name(a: dict) -> str:
+    words = " ".join(w for w in (a.get("color"), {"suv": "SUV"}.get(a.get("category"), a.get("category") or "vehicle")) if w)
+    return ("an " if words[0].lower() in "aeiou" or words.startswith("SUV") else "a ") + words
+
+
+def vehicle_cast(tsir: dict, projs: list[dict | None], cams: list[str], max_depth: float = 120.0,
+                 min_px: float = 6.0) -> dict[str, str]:
+    """One caption sentence per camera naming the vehicles the map shows in it, nearest first, by the scenario's colour
+    and category. ``projs``: :func:`tsf.cosmos.adherence.project_clip` of the frames the chunk spans (its conditioning
+    frame and its last frame); no projection, no sentences. The drive-long captions named road users per direction from
+    the plan: the front caption left out the van ahead (generated white, blue after a re-anchor), and a truck in a block
+    that also named a yellow bus came back as a bus. Named per chunk from the map, a re-drawn chunk gets the same looks."""
+    if not any(projs):
+        return {}
+    look = {a["id"]: _vehicle_name(a) for a in tsir["actors"] if a.get("role") != "ego"}
+    out = {}
+    for cam in cams:
+        near: dict[str, float] = {}
+        for p in projs:
+            for o in ((p or {}).get(cam) or {}).get("objects", []):
+                if o["id"] in look and o["depth"] <= max_depth and o["box"][3] - o["box"][1] >= min_px:
+                    near[o["id"]] = min(near.get(o["id"], max_depth), o["depth"])
+        names = [look[i] for i in sorted(near, key=near.get)]
+        out[cam] = ("The road in view is empty." if not names else f"The only vehicle in view is {names[0]}."
+                    if len(names) == 1 else f"The only vehicles in view are {', '.join(names[:-1])} and {names[-1]}.")
+    return out
+
+
+def _boxes(proj: dict | None) -> dict | None:
+    """The projected objects of :func:`tsf.cosmos.adherence.project_clip` in the drift guard's box format."""
+    return {c: {"size": r["size"], "boxes": [o["box"] for o in r["objects"]]} for c, r in proj.items()} if proj else None
+
+
 class Recorder:
     """Incremental version of TanitSim.run()'s logging, so the world can be exported mid-run."""
 
@@ -103,25 +136,37 @@ class CosmosSensors:
         elif not captions and not dry:
             self.span, lint = duration, {}
             captions = llm_captions(tsir, cams, frames=int(round(duration * FPS)) + 1 if duration else chunk, fps=FPS,
-                                    report=lint)
+                                    road_users=False, report=lint)       # vehicles: vehicle_cast per chunk
             (out / "captions_lint.json").write_text(json.dumps(lint, indent=1))
         self.caps = captions or {}
         (out / "gen").mkdir(parents=True, exist_ok=True)
         cap_file.write_text(json.dumps(self.caps, indent=1))
         if self.span:
             span_file.write_text(json.dumps({"span_s": self.span}))
-        self.guard = DriftGuard() if guard and not dry else None
+        self.guard = DriftGuard(veil_cams=FRONT_CAMS) if guard and not dry else None
         self.last: dict[str, str] | None = None
+        self.proj: dict | None = None                       # the sim projected into the last chunk's last frame
         self.k, self.timing = 0, []
 
-    def _captions(self, t0: float, signal: str = "") -> dict:
-        """The chunk's span of the drive-long captions; ``signal`` (:func:`signal_caption`) is appended for the front
-        cameras only, since a caption that names a signal makes the generator paint one wherever it looks."""
+    def _captions(self, t0: float, signal: str = "", cast: dict | None = None) -> dict:
+        """The chunk's span of the drive-long captions plus each camera's ``cast`` (:func:`vehicle_cast`); ``signal``
+        (:func:`signal_caption`) is appended for the front cameras only, since a caption that names a signal makes the
+        generator paint one wherever it looks."""
         from tsf.cosmos.generate import window_caption
-        if not self.span:
-            return self.caps
-        return {c: window_caption(txt, t0, t0 + self.chunk / FPS) + (f" {signal}" if signal and c in FRONT_CAMS else "")
+        cast = cast or {}
+        return {c: (window_caption(txt, t0, t0 + self.chunk / FPS) if self.span else txt)
+                + (f" {cast[c]}" if c in cast else "") + (f" {signal}" if signal and c in FRONT_CAMS else "")
                 for c, txt in self.caps.items()}
+
+    def _project(self, cid: str) -> dict | None:
+        """The sim's objects and signal heads in every camera at chunk ``cid``'s last frame (None if that fails: the
+        guard then judges the veil over the whole band and the captions name no vehicles)."""
+        from tsf.cosmos import adherence
+        try:
+            return adherence.project_clip(self.out, cid)
+        except Exception as e:  # noqa: BLE001 - WSM venv missing or the export unreadable
+            print(f"projection of {cid} failed: {e}", flush=True)
+            return None
 
     def _verdicts(self, cid: str, r: dict) -> list[str]:
         """Signal verdicts (:func:`tsf.cosmos.adherence.score_signals`) of the front camera's newest frame of chunk ``cid``."""
@@ -188,20 +233,24 @@ class CosmosSensors:
                 return {c: cv2.cvtColor(cv2.imread(str(generate.extract_frame(p, self.out / "gen" / f"{cid}_{c}.png",
                                                                               -1))), cv2.COLOR_BGR2RGB)
                         for c, p in ctrl.items()}
+            proj = self._project(cid)
             first = self.last
-            if self.guard is not None and first:
-                first, drift = self.guard(first, self.out / "gen" / cid / "cond")    # None: re-anchor on the controls
+            if self.guard is not None and first:                     # None: re-anchor on the controls
+                first, drift = self.guard(first, self.out / "gen" / cid / "cond", boxes=_boxes(self.proj))
+            cast = vehicle_cast(self.tsir, [self.proj, proj], self.cams)
 
             def gen(out_dir: Path, seed_offset: int = 0) -> dict:
                 return generate.sim_chunk(self.out / "wsm" / cid, out_dir, self.cams, frames=self.chunk, res=self.res,
-                                          captions=self._captions(t0, signal), first_frames=first, seed=k + seed_offset,
-                                          scenario=self.tsir["meta"]["id"])
+                                          captions=self._captions(t0, signal, cast), first_frames=first,
+                                          seed=k + seed_offset, scenario=self.tsir["meta"]["id"])
             r = gen(self.out / "gen" / cid)
             if self.judge:
                 r, judged = self._judged(cid, r, gen)
+        else:
+            proj = self._project(cid)                                # resumed: the chunk's export is still on disk
         if self.guard is not None and k == 0:
-            self.guard.reference(r["last_frames"])
-        self.last = r["last_frames"]
+            self.guard.reference(r["last_frames"], _boxes(proj))
+        self.last, self.proj = r["last_frames"], proj
         self.k += 1
         self.timing.append({"chunk": k, "t_world": round(t_end, 3), "export_s": round(t_exp, 1),
                             "wsm_s": round(t_wsm, 1), "cosmos_s": round(r["request_s"], 1),

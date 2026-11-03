@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from tsf.cosmos.drift import DriftGuard, saturation, sharpness, veil, veil_tiles
+from tsf.cosmos.drift import DriftGuard, box_cover, saturation, sharpness, veil, veil_tiles
 
 
 def _scene(seed: int = 0) -> np.ndarray:
@@ -66,3 +66,32 @@ def test_veil_triggers_a_reanchor_that_whole_frame_sharpness_misses(tmp_path):
     off = DriftGuard(min_gap=1, veil_below=0.0)
     off.reference({"front": tmp_path / "ref.png"})
     assert off({"front": tmp_path / "smear.png"}, tmp_path / "c")[0] is not None
+
+
+def test_a_near_vehicle_is_no_veil_once_its_box_is_masked(tmp_path):
+    """A truck side filling the left half of the band (flat, little local contrast) read as a veil and re-anchored the
+    chain; with the sim's box for it the guard compares only the uncovered tiles."""
+    ref, near = _scene(), _scene()
+    cv2.rectangle(near, (0, 120), (430, 420), (170, 175, 180), -1)
+    full = veil(near, veil_tiles(ref))
+    cover = box_cover([[0, 120, 430, 420]], (832, 480))
+    assert full < 0.75 and veil(near, veil_tiles(ref), cover < 0.25) > 0.9
+    assert veil(near, veil_tiles(ref), np.zeros((4, 8), bool)) == 1.0       # nothing left to judge
+    cv2.imwrite(str(tmp_path / "ref.png"), ref)
+    cv2.imwrite(str(tmp_path / "near.png"), near)
+    g = DriftGuard(min_gap=1)
+    g.reference({"front": tmp_path / "ref.png"})
+    boxes = {"front": {"size": [832, 480], "boxes": [[0, 120, 430, 420]]}}
+    out, st = g({"front": tmp_path / "near.png"}, tmp_path / "c", boxes=boxes)
+    assert out is not None and st["front"]["veil_tiles"] == 16
+    assert g({"front": tmp_path / "near.png"}, tmp_path / "c")[0] is None    # without the box: the old false re-anchor
+
+
+def test_veil_reanchors_only_for_the_cameras_it_is_trusted_on(tmp_path):
+    cv2.imwrite(str(tmp_path / "ref.png"), _scene())
+    cv2.imwrite(str(tmp_path / "smear.png"), _veiled(_scene()))
+    g = DriftGuard(min_gap=1, veil_cams=("front",))
+    g.reference({"cross": tmp_path / "ref.png", "front": tmp_path / "ref.png"})
+    out, st = g({"cross": tmp_path / "smear.png", "front": tmp_path / "ref.png"}, tmp_path / "c")
+    assert out is not None and st["cross"]["veil"] < 0.5                    # reported, not acted on
+    assert g({"cross": tmp_path / "ref.png", "front": tmp_path / "smear.png"}, tmp_path / "c")[0] is None
