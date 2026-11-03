@@ -8,43 +8,95 @@
  from collections import OrderedDict
  from collections.abc import Iterable, Mapping, Sequence
  from contextlib import contextmanager
-@@ -99,6 +100,10 @@
+@@ -99,6 +100,21 @@
      item_token_ranges,
  )
  
-+# tsf/thor patch: TSF_KV_VIEWS=N sizes the AR-Diffusion KV ring (default + worst case) for N RGB-only views instead of all
++# tsf/thor patch: TSF_KV_VIEWS=N sizes the AR-Diffusion KV ring (default + worst case) for N views instead of all
 +# manifest cameras with LiDAR, so Sim-Auto fits next to the resident LLM. 0 = stock behaviour.
++# TSF_KV_LIDAR=1 (only with TSF_KV_VIEWS) sizes it for joint camera+LiDAR requests (adds the LiDAR tokens of every
++# chunk to the frame unit); 0 = RGB-only. Joint requests need 1.
 +_TSF_KV_VIEWS = int(os.environ.get("TSF_KV_VIEWS", "0"))
++_TSF_KV_LIDAR = os.environ.get("TSF_KV_LIDAR", "0") not in ("", "0")
++# TSF_LIDAR_CHUNK=N overrides the checkpoint's LiDAR VAE streaming chunk (20 sweeps). The FP32 encoder / decoder run 20 sweeps of
++# 128 x 1808 at once; next to the resident LLM the unified memory has no room for that (a 3-view joint request on thor3 drove
++# MemAvailable from ~30 GB to < 1 GB and the worker was killed). Chunks are causal with ``streaming_context_frames`` (21) of
++# history, so a smaller chunk only gives each sweep more context. 0 = stock behaviour.
++_TSF_LIDAR_CHUNK = int(os.environ.get("TSF_LIDAR_CHUNK", "0"))
++# TSF_KV_RES=720 sizes the KV ring for 720p requests (the checkpoint default is 480: a 720p request overruns a
++# 480p-sized ring). Empty = stock behaviour.
++_TSF_KV_RES = os.environ.get("TSF_KV_RES", "")
 +
  logger = init_logger(__name__)
  
  _SYSTEM_PROMPTS = {
-@@ -280,6 +285,8 @@
+@@ -177,6 +193,9 @@
+             lidar_config = dict(self.manifest.lidar)
+             self.lidar_encoder = Cosmos3LidarEncoder.from_pretrained(od_config.model, lidar_config, self.device)
+             self.lidar_decoder = Cosmos3LidarDecoder.from_pretrained(od_config.model, lidar_config, self.device)
++            if _TSF_LIDAR_CHUNK:  # tsf/thor patch: smaller VAE streaming chunks (the metadata check above needs the checkpoint value)
++                for _vae in (self.lidar_encoder, self.lidar_decoder):
++                    _vae.config["streaming_chunk_frames"] = min(_TSF_LIDAR_CHUNK, int(_vae.config["streaming_chunk_frames"]))
+             network = lidar_config["network_config"]
+             assert self.manifest.lidar_latent_patch_size_hw is not None
+             self.lidar_grid = lidar_grid(
+@@ -279,7 +298,9 @@
+         )
  
      def _default_geometry(self) -> tuple[int, bool, int, int, float]:
-         width, height = VIDEO_RES_SIZE_INFO[self.manifest.default_resolution]["16,9"]
-+        if _TSF_KV_VIEWS:  # tsf/thor patch: size the paged KV ring for N views, RGB-only
-+            return _TSF_KV_VIEWS, False, height, width, self.manifest.default_fps
+-        width, height = VIDEO_RES_SIZE_INFO[self.manifest.default_resolution]["16,9"]
++        width, height = VIDEO_RES_SIZE_INFO[_TSF_KV_RES or self.manifest.default_resolution]["16,9"]
++        if _TSF_KV_VIEWS:  # tsf/thor patch: size the paged KV ring for N views (+ LiDAR if TSF_KV_LIDAR=1)
++            return _TSF_KV_VIEWS, _TSF_KV_LIDAR, height, width, self.manifest.default_fps
          return len(self.manifest.cameras), self.manifest.joint, height, width, self.manifest.default_fps
  
      def ar_diffusion_kv_cache_spec(self) -> ARDiffusionKVCacheSpec:
-@@ -311,16 +318,16 @@
+@@ -309,18 +330,19 @@
+         )
+ 
      def ar_diffusion_worst_case_request_specs(self) -> Iterable[ARDiffusionRequestKVSpec]:
-         sizes = VIDEO_RES_SIZE_INFO[self.manifest.default_resolution]
+-        sizes = VIDEO_RES_SIZE_INFO[self.manifest.default_resolution]
++        sizes = VIDEO_RES_SIZE_INFO[_TSF_KV_RES or self.manifest.default_resolution]
          width, height = max(sizes.values(), key=lambda size: size[0] * size[1])
 -        num_views = len(self.manifest.cameras)
 +        num_views = _TSF_KV_VIEWS or len(self.manifest.cameras)
++        joint = _TSF_KV_LIDAR if _TSF_KV_VIEWS else self.manifest.joint  # tsf/thor patch
          yield ARDiffusionRequestKVSpec(
              kv_spec=self._kv_spec(
                  num_views=num_views,
 -                joint=self.manifest.joint,
-+                joint=False if _TSF_KV_VIEWS else self.manifest.joint,
++                joint=joint,
                  height=height,
                  width=width,
                  fps=self.manifest.default_fps,
              ),
 -            geometry_key=(num_views, self.manifest.joint, height, width, self.manifest.default_fps),
-+            geometry_key=(num_views, False if _TSF_KV_VIEWS else self.manifest.joint, height, width, self.manifest.default_fps),
++            geometry_key=(num_views, joint, height, width, self.manifest.default_fps),
          )
  
      def validate_ar_diffusion_effective_spec(self, spec: ARDiffusionKVCacheSpec) -> None:
+@@ -463,6 +485,8 @@
+             extra = req.sampling_params.extra_args or {}
+             self._drop_session(str(extra.get("session_id") or self._bound_session_id or "default"))
+             raise
++        finally:
++            torch.cuda.empty_cache()  # tsf/thor patch: unified memory, give the allocator cache back between requests
+ 
+     def _forward_impl(self, req: DiffusionRequestBatch) -> DiffusionOutput:
+         # ---- Admission (pure; raises ARDiffusionRequestRejectedError only) ---------
+@@ -705,6 +729,7 @@
+             frames = load_lidar_frames(lidar_request["control_path"], num_sweeps=sweeps)
+             lidar_control = self.lidar_encoder(frames).to(device=self.device, dtype=self.sampling_dtype)
+             del frames
++            torch.cuda.empty_cache()  # tsf/thor patch: give the FP32 encoder activations back before denoising
+             lidar_target = torch.zeros_like(lidar_control)
+             if lidar_condition:
+                 lidar_target[:, :, :1] = self._encode_lidar_condition(lidar_request, num_sweeps=sweeps)
+@@ -1183,6 +1208,7 @@
+         if state.joint and lidar_request is not None and as_bool(lidar_request.get("return_output"), False):
+             assert self.lidar_decoder is not None and state.lidar_target_latents is not None
+             lidar_output = self.lidar_decoder(state.lidar_target_latents)
++            torch.cuda.empty_cache()  # tsf/thor patch
+             payload["lidar"] = lidar_output
+             config = self.lidar_decoder.config
+             metadata["lidar"] = {

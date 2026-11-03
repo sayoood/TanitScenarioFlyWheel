@@ -1,0 +1,22 @@
+# Cosmos3-Nano-Sim-Auto: causal rolling multiview (RGB WSM transfer, optional joint LiDAR).
+# The KV ring (sink chunk 0 + previous chunk) lives in the AR-Diffusion paged pool with one
+# padded chunk per frame unit; the window/sink geometry comes from the exported artifact.
+
+pipeline: cosmos3_nano_sim_auto
+async_chunk: false
+distributed_executor_backend: mp
+dtype: bfloat16
+default_resolution: [720, 1280]
+max_pixels: 921600
+
+stages:
+  - stage_id: 0
+    # Inherit CUDA_VISIBLE_DEVICES; the requested TP size determines the GPU count.
+    max_num_seqs: 1
+    enforce_eager: true
+    model_class_name: Cosmos3NanoSimAutoPipeline
+    engine_backend: vllm_omni.experimental.ar_diffusion.engine.ARDiffusionEngine
+    model_config:
+      ar_diffusion_kv_config:
+        gpu_memory_fraction: 0.4      # 720p: 5 views need ~25 GB of KV; pause tsf-llm (0.6 with it running OOM-killed it)
+        warmup_cudagraph: false

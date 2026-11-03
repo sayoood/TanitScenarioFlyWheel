@@ -131,6 +131,24 @@ def extract_frame(video, png, index: int = -1) -> Path:
     return Path(png)
 
 
+def extract_frames(video, picks: dict[int, Path]) -> dict[int, Path]:
+    """Save the frames ``{index: png}`` of ``video``, decoding front to back (exact indices, no seeking)."""
+    import cv2
+    cap, i, left = cv2.VideoCapture(str(video)), 0, set(picks)
+    while left:
+        ok, fr = cap.read()
+        if not ok:
+            break
+        if i in left:
+            cv2.imwrite(str(picks[i]), fr)
+            left.discard(i)
+        i += 1
+    cap.release()
+    if left:
+        raise RuntimeError(f"{video} has {i} frames, wanted {sorted(left)}")
+    return {k: Path(p) for k, p in picks.items()}
+
+
 def resolve_captions(captions, cameras, frames: int, scenario: str | None, fps: float = 30.0, tsir=None) -> dict[str, str]:
     """Per-camera caption text. ``captions``: dict camera -> text | sidecar path, or a directory of ``<camera>.json``, or
     None (deterministic template for ``scenario``; ``tsir`` adds its static objects / setting sentences)."""
@@ -186,7 +204,7 @@ class MemSampler:
 # ============================================================================== server (docker)
 def serve(kind: str, *, port: int = 8100, kv_views: int = 1, lidar: bool = False, lidar_chunk: int = 4, work_dir=None, name: str | None = None,
           extra_args: tuple[str, ...] = (), dry_run: bool = False, owner: str | None = None,
-          force: bool = False) -> list[str]:
+          force: bool = False, kv_res: str | None = None) -> list[str]:
     """Start ``tsf-cosmos-<kind>`` (detached) and return the docker argv. Refuses while another ``tsf-cosmos-*`` runs.
 
     ``work_dir`` (default ``~/tsf/dev/cosmos_gen``, mounted at /work) holds ``deploy/sim_auto_thor.yaml`` (small KV pool
@@ -198,6 +216,8 @@ def serve(kind: str, *, port: int = 8100, kv_views: int = 1, lidar: bool = False
     LiDAR tokens of every chunk are added to the frame unit); a server started without it cannot serve joint requests.
     ``lidar_chunk`` (``TSF_LIDAR_CHUNK``, with ``lidar=True``): sweeps per streaming chunk of the FP32 LiDAR VAE (checkpoint: 20);
     20 sweeps of 128 x 1808 at once exhaust the unified memory next to the resident LLM and get the worker OOM-killed, 4 does not.
+    ``kv_res="720"`` (``TSF_KV_RES``, Sim only): size the ring for 720p requests, the resolution the model was trained at (the
+    checkpoint default is 480p and a 720p request overruns a 480p ring), with ``deploy/sim_auto_thor_720.yaml`` (larger pool).
 
     Refuses (RuntimeError) while ANY ``tsf-cosmos-*`` container runs, including one with the same name: a caller must never
     replace another caller's live server (``force=True`` removes a running container of the SAME name only; use it for your
@@ -224,12 +244,13 @@ def serve(kind: str, *, port: int = 8100, kv_views: int = 1, lidar: bool = False
     if kind == "sim":
         mod = "/usr/local/lib/python3.12/dist-packages/vllm_omni/diffusion/models/cosmos3_nano_sim_auto/pipeline_cosmos3_nano_sim_auto.py"
         cmd += ["-e", f"TSF_KV_VIEWS={kv_views}", "-e", f"TSF_KV_LIDAR={int(bool(lidar))}",
-                "-e", f"TSF_LIDAR_CHUNK={int(lidar_chunk) if lidar else 0}",
+                "-e", f"TSF_LIDAR_CHUNK={int(lidar_chunk) if lidar else 0}", "-e", f"TSF_KV_RES={kv_res or ''}",
                 "-v", f"{work}/patches/pipeline_cosmos3_nano_sim_auto.py:{mod}:ro"]
     cmd += [IMAGE, "vllm", "serve", repo, "--revision", "main", "--omni", "--model-class-name", cls, "--no-guardrails",
             "--host", "0.0.0.0", "--port", "8000", "--init-timeout", "1800"]
     if kind == "sim":
-        cmd += ["--deploy-config", "/work/deploy/sim_auto_thor.yaml", "--tensor-parallel-size", "1"]
+        deploy = "sim_auto_thor_720.yaml" if kv_res == "720" else "sim_auto_thor.yaml"
+        cmd += ["--deploy-config", f"/work/deploy/{deploy}", "--tensor-parallel-size", "1"]
     else:
         cmd += ["--diffusion-compile-granularity", "regional", "--no-diffusion-compile-dynamic"]
     cmd += list(extra_args)
@@ -557,7 +578,12 @@ def sim_chunk(wsm_dir, out_dir, cameras=None, frames: int = 49, res: str = "480"
     r = _run("sim", wsm_dir, out_dir, cameras, frames, res, captions, start=start, seed=seed, steps=4, guidance=1.0, shift=0.0,
              fps=fps, scenario=scenario, first_frames=first_frames, base_url=base_url, timeout=timeout,
              lidar_control=lidar_control, lidar_condition=lidar_condition, tsir=tsir)
-    r["last_frames"] = {c: str(extract_frame(p, Path(out_dir) / f"last_{c}.png", -1)) for c, p in r["videos"].items()}
+    # the next chunk's conditioning frames come from the server's camera-major video: the per-camera split is a second
+    # lossy encode, and chaining on it cost 13 % sharpness at every hand-off (Laplacian variance 93 -> 81)
+    n = r["frames"]
+    picks = {i * n + n - 1: Path(out_dir) / f"last_{c}.png" for i, c in enumerate(r["cameras"])}
+    extract_frames(r["camera_major"], picks)
+    r["last_frames"] = {c: str(picks[i * n + n - 1]) for i, c in enumerate(r["cameras"])}
     return r
 
 
@@ -635,7 +661,7 @@ def _load_window(wdir: Path, key: str, cams: list[str]) -> dict | None:
 def sim_windows(wsm_dir, out_dir, cameras=None, frames: int = 97, res: str = "480", captions=None, *, window_frames: int = WINDOW_FRAMES,
                 start: int = 0, first_frames: dict[str, Path] | None = None, seed: int = 0, fps: float = 30.0,
                 scenario: str | None = None, lidar_control=None, base_url: str = DEFAULT_URL, timeout: float = 7200,
-                before_window=None, resume: bool = True, tsir=None) -> dict:
+                before_window=None, resume: bool = True, tsir=None, drift_guard: bool = True) -> dict:
     """:func:`sim_chunk` for a clip longer than one request can hold: ``frames`` (4k+1) camera frames from control frame
     ``start`` in windows of at most ``window_frames`` that overlap by one frame; window k+1 is conditioned (I2V) on the last
     generated frame of window k, its captions are the clip's captions cut to its time span, its seed is ``seed + k``. The
@@ -643,7 +669,8 @@ def sim_windows(wsm_dir, out_dir, cameras=None, frames: int = 97, res: str = "48
     previous window's last sweep, which lies half a window earlier than the next window's first one) and concatenated.
     ``before_window(k)`` runs before each request (memory guard). ``resume``: a window that an earlier call finished with the
     same request (captions, start, frames, seed, resolution) is reused, so a crashed run continues where it stopped. One
-    window = plain :func:`sim_chunk`. Returns the sim_chunk
+    window = plain :func:`sim_chunk`. ``drift_guard``: the hand-off frames are colour- and sharpness-corrected toward the
+    first window's (:class:`tsf.cosmos.drift.DriftGuard`, never re-anchored: a delivered clip must not jump). Returns the sim_chunk
     dict for the whole clip (``videos`` 4k+1 frames, ``lidar`` generated / control with all sweeps) plus ``windows``
     (per-window start, frames, request_s, memory delta, server peak). Why short windows: on Thor's unified memory a 3-view
     joint request needs ~13.7 GB beyond the resident server for 49 frames and more than 24 GB for 97 (the OOM killer then
@@ -660,6 +687,8 @@ def sim_windows(wsm_dir, out_dir, cameras=None, frames: int = 97, res: str = "48
     scenario = scenario or Path(wsm_dir).name
     caps = resolve_captions(captions, cams, frames, scenario, fps, tsir)
     runs, ff, s = [], first_frames, start
+    from tsf.cosmos.drift import DriftGuard
+    guard = DriftGuard(reanchor_below=0.0) if drift_guard else None
     while True:
         wf = min(window_frames, start + frames - s)
         k = len(runs)
@@ -676,6 +705,11 @@ def sim_windows(wsm_dir, out_dir, cameras=None, frames: int = 97, res: str = "48
             (wdir / "window.json").write_text(json.dumps({"key": key, "start": s, "frames": wf, "seed": seed + k}))
         runs.append(r)
         ff = {c: Path(p) for c, p in r["last_frames"].items()}
+        if guard is not None:
+            if k == 0:
+                guard.reference(ff)
+            else:
+                ff, r["drift"] = guard(ff, wdir / "cond")
         s += wf - 1
         if s >= start + frames - 1:
             break

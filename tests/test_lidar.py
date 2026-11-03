@@ -397,7 +397,7 @@ def test_sim_windows_chains_conditions_and_joins(tmp_path, monkeypatch):
     monkeypatch.setattr(g, "find_controls", lambda d, cams: {c: Path(c) for c in cams})
     monkeypatch.setattr(g, "trim_control", lambda src, dst, **k: Path(dst))
     r = g.sim_windows(tmp_path, tmp_path / "out", [cam], 25, "480", CAP, window_frames=13, seed=5,
-                      scenario="x", lidar_control=ctl, before_window=guard.append)
+                      scenario="x", lidar_control=ctl, before_window=guard.append, drift_guard=False)
     assert guard == [0, 1] and [c["start"] for c in calls] == [0, 12] and [c["frames"] for c in calls] == [13, 13]
     assert calls[0]["ff"] is None and Path(calls[1]["ff"][cam]).name == f"last_{cam}.png" and [c["seed"] for c in calls] == [5, 6]
     assert calls[1]["caps"].startswith("[0.00s-") and "B" in calls[1]["caps"] and "A" not in calls[1]["caps"]
@@ -412,7 +412,7 @@ def test_sim_windows_chains_conditions_and_joins(tmp_path, monkeypatch):
         raise AssertionError("window must be reused")
     monkeypatch.setattr(g, "sim_chunk", boom)
     again = g.sim_windows(tmp_path, tmp_path / "out", [cam], 25, "480", CAP, window_frames=13, seed=5,
-                          scenario="x", lidar_control=ctl, before_window=guard.append)
+                          scenario="x", lidar_control=ctl, before_window=guard.append, drift_guard=False)
     assert [w["resumed"] for w in again["windows"]] == [True, True] and guard == [0, 1]
     with pytest.raises(AssertionError):                                    # other captions: not reusable
         g.sim_windows(tmp_path, tmp_path / "out", [cam], 25, "480", {cam: "[0s-0.8s]: other"}, window_frames=13, seed=5,

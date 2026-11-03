@@ -74,7 +74,7 @@ def test_uc1_export_validates_and_frames(uc1, tmp_path):
     nv = rds_hq.nvidia_io()
     v = nv.validate_clip(root, "uc1_test", "ftheta", require_planar_polygons=True)
     assert v["pose_frames"] == 297 and len(v["cameras"]) == 7
-    assert v["tracks"] == 6 and v["map_labels"]["3d_traffic_lights"] == 8
+    assert v["tracks"] == 6 and v["map_labels"]["3d_traffic_lights"] == 16          # 4 arms x (main, left) x (near, far)
     v2w = np.load(root / "tsf_export" / "uc1_test.vehicle_to_world.npy")
     assert np.allclose(v2w[0], np.eye(4))                           # rear-axle ground origin, FLU axes at frame 0
     assert rep["ego"]["yaw_change_deg"] == pytest.approx(90.0, abs=1.0)    # the left turn
@@ -105,6 +105,23 @@ def test_signal_states_follow_log(uc1, tmp_path):
         for k in (0, 100, 296):
             tick = int(round((12.0 + k / 30) / dt))
             assert st["state"][k].split("_")[0] in (log.signals[h["arm"]][tick], "red")
+
+
+@needs_nvidia
+def test_far_side_repeaters_mirror_the_near_heads(uc1, tmp_path):
+    sim, log = uc1
+    root = rds_hq.export_clip(sim, log, tmp_path / "rds", "uc1_far", t0=12.0)
+    import tarfile
+    with tarfile.open(root / "3d_traffic_lights_lightnet_status" / "uc1_far.tar") as tf:
+        agg = json.loads(tf.extractfile(tf.getmembers()[0]).read())
+    states = {v["feature_id"]: v["state"] for v in agg["traffic_light_states"].values()}
+    heads = {h["feature_id"]: h for h in rds_hq.export_report(root, "uc1_far")["traffic_lights"]}
+    near = [h for h in heads.values() if not h["far_side"]]
+    assert near and len(heads) == 2 * len(near)
+    for h in near:
+        far = heads[h["feature_id"].replace(f"tl_{h['signal_id']}", f"tl_{h['signal_id']}_far", 1)]
+        assert far["arm"] == h["arm"] and states[far["feature_id"]] == states[h["feature_id"]]
+        assert 20 < math.dist(far["pos_sim"], h["pos_sim"]) < 60                     # across the junction
 
 
 @needs_nvidia

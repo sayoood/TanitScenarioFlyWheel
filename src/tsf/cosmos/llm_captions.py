@@ -12,6 +12,7 @@ variants from augmentation only change ``appearance``, so one call per variant c
 from __future__ import annotations
 
 import json
+import re
 
 from pydantic import BaseModel, Field
 
@@ -36,14 +37,75 @@ class SceneCaption(BaseModel):
     windows: list[Window] = Field(..., min_length=3, max_length=3)
 
 
+# What a caption must not say: Sim-Auto paints what the caption names over what the WSM control shows (turn arrows
+# anywhere, a green light where the map had red), and the closed-loop ego does what the policy decides, not the script.
+RULES = {
+    "road marking": re.compile(r"\b(arrows?|lane (lines?|markings?)|stop ?lines?|crosswalks?|zebra|road markings?|"
+                               r"painted (lines?|markings?|arrows?))\b", re.I),
+    "signal colour": re.compile(r"\b(red|amber|yellow|green)\s+((left-turn|turn|traffic|signal)\s+)?"
+                                r"(lights?|signals?|lamps?)\b|\b(traffic lights?|signals?)\b[^.]{0,30}\b(is|are|turns?|"
+                                r"turned|shows?|showing|remains?|changes?)\b[^.]{0,20}\b(red|amber|yellow|green)\b", re.I),
+    "ego action": re.compile(r"\bego\b|\b(the|our) vehicle\b[^.]{0,30}\b(stops|stopped|waits|waiting|slows|slowing|"
+                             r"decelerat\w*|accelerat\w*|changes? lanes?|lane change|turns|turning|proceeds?|yields?)\b",
+                             re.I),
+    "others yield": re.compile(r"\b(stop\w*|wait\w*|yield\w*|allow\w*|let)\b[^.]{0,30}\b(for|to let|allowing|let)\b"
+                               r"[^.]{0,20}\b(the vehicle|us)\b", re.I),
+    "light mounting": re.compile(r"\b(gantr\w*|mast arms?)\b|\b(overhead|hanging|suspended)\b[^.]{0,30}\b(lights?|"
+                                 r"signals?)\b|\b(lights?|signals?)\b[^.]{0,30}\b(overhead|hanging|suspended)\b", re.I),
+    "traffic guess": re.compile(r"\b(intersection|junction|road|lanes?|street)s?\b[^.]{0,25}\b(is|are|remains?|"
+                                r"becomes?)\s+(now\s+)?(clear|empty|free)\b|\bno (other )?(traffic|vehicles|cars)\b|"
+                                r"\b(have|has) (passed|cleared|left)\b|\bno longer (visible|ahead|there)\b", re.I),
+}
+
+
+def caption_issues(sc: SceneCaption) -> list[dict]:
+    """Sentences that break :data:`RULES`, as ``{where, rule, sentence}``."""
+    texts = {"setting": sc.setting, **{f"window{k}.{side}": getattr(w, side) for k, w in enumerate(sc.windows)
+                                       for side in ("front", "left", "right", "rear")}}
+    out = []
+    for where, text in texts.items():
+        for sent in re.split(r"(?<=[.!?])\s+", text):
+            for rule, rx in RULES.items():
+                if rx.search(sent):
+                    out.append({"where": where, "rule": rule, "sentence": sent})
+                    break
+    return out
+
+
+def _strip(sc: SceneCaption, issues: list[dict]) -> SceneCaption:
+    bad = {(i["where"], i["sentence"]) for i in issues}
+
+    def clean(where: str, text: str) -> str:
+        return " ".join(s for s in re.split(r"(?<=[.!?])\s+", text) if (where, s) not in bad).strip()
+    return SceneCaption(setting=clean("setting", sc.setting),
+                        windows=[Window(**{side: clean(f"window{k}.{side}", getattr(w, side))
+                                           for side in ("front", "left", "right", "rear")})
+                                 for k, w in enumerate(sc.windows)])
+
+
+def _brief_road(road: dict) -> dict:
+    """The road without the signal timing (the captioner turned it into guessed colours) and with how lights stand."""
+    out = {k: v for k, v in road.items() if k != "signal_plan"}
+    if road.get("signalized"):                     # positive wording only: a caption's "no gantry" paints a gantry
+        out["traffic_lights"] = "signal heads on short poles at the kerbside corners of the junction, near and far side"
+    return out
+
+
+def _brief_actor(a: dict) -> dict:
+    d = {k: a.get(k) for k in ("id", "role", "category", "color", "initial", "initial_speed")}
+    if d["role"] == "ego":                         # "ego" ends up in the caption as "the ego vehicle stops ..."
+        d["role"] = "camera vehicle (never describe it)"
+    return d
+
+
 def llm_captions(tsir: dict, cameras=CAMERAS_7, *, frames: int = 297, fps: float = 30.0,
-                 appearance: dict | None = None, llm: LLM | None = None) -> dict[str, str]:
+                 appearance: dict | None = None, llm: LLM | None = None, report: dict | None = None) -> dict[str, str]:
+    """``report``: filled with the rule check ({issues_first, issues_final, repaired, stripped})."""
     env = {**tsir.get("environment", {}), **(appearance or {})}
     bounds = _bounds(frames, fps, 3)
     brief = {"title": tsir["meta"]["title"], "description": tsir["meta"].get("description", ""), "environment": env,
-             "road": tsir["road"],
-             "actors": [{k: a.get(k) for k in ("id", "role", "category", "color", "initial", "initial_speed")}
-                        for a in tsir["actors"]],
+             "road": _brief_road(tsir["road"]),
+             "actors": [_brief_actor(a) for a in tsir["actors"]],
              "actions": [{k: a.get(k) for k in ("actor", "type", "start", "direction", "target_speed")}
                          for a in tsir["actions"]],
              "windows_s": [list(b) for b in bounds]}
@@ -61,10 +123,35 @@ def llm_captions(tsir: dict, cameras=CAMERAS_7, *, frames: int = 297, fps: float
              "plausible, consistent setting. Every sign and static object listed in the scenario must appear, with its "
              "colour and shape (a speed-limit sign with its number, cones, barriers, parked vehicles), in the window "
              "and the direction where the vehicle passes it; do not add road works or signs the scenario does not "
-             "list. For each of the three time windows describe what is visible ahead, left, right and behind "
-             "the vehicle as the scenario unfolds."}]
-    sc = SceneCaption.model_validate((llm or LLM()).chat(msgs, schema=SceneCaption.model_json_schema(),
-                                                        role="captioner", max_tokens=3000))
+             "list. Do not describe painted road markings (turn arrows, lane lines, stop lines, crosswalks): the map "
+             "draws them where they are, and a caption that names them makes the generator paint them anywhere. Never "
+             "use the word 'arrow'. Never state the colour or state of a traffic signal: the map shows each signal's "
+             "state, and a guessed colour makes the generator paint it; you may say that traffic lights stand at the "
+             "junction. Describe the surroundings, not the vehicle's own driving: do not say that it changes lanes, "
+             "slows, stops, waits or turns, and do not say that other road users stop, wait or yield for it (a driving "
+             "policy decides that). Describe other road users by type, colour and position, with movements only as the "
+             "scenario's actions state them, and add no road users, cyclists or pedestrians the scenario does not "
+             "list. The map places every road user at every moment: do not guess where they have moved, whether they "
+             "have passed, or whether the road or junction is clear. Describe only what is there, never what is "
+             "absent. For each of the three time windows describe what is visible ahead, left, right and behind the "
+             "vehicle: the surroundings, and the listed road users in that direction by their look."}]
+    llm = llm or LLM()
+    raw = llm.chat(msgs, schema=SceneCaption.model_json_schema(), role="captioner", max_tokens=3000)
+    sc = SceneCaption.model_validate(raw)
+    first = issues = caption_issues(sc)
+    if issues:                                      # one repair round, then drop whatever still breaks a rule
+        fix = msgs + [{"role": "assistant", "content": json.dumps(raw, separators=(",", ":"))},
+                      {"role": "user", "content": "These sentences break the rules above: " + json.dumps(
+                          [{"rule": i["rule"], "sentence": i["sentence"]} for i in issues]) +
+                       ". Return the same JSON with only those sentences reworded or removed."}]
+        sc = SceneCaption.model_validate(llm.chat(fix, schema=SceneCaption.model_json_schema(), role="captioner",
+                                                  max_tokens=3000))
+        issues = caption_issues(sc)
+        if issues:
+            sc = _strip(sc, issues)
+    if report is not None:
+        report.update(issues_first=first, issues_final=caption_issues(sc), repaired=bool(first),
+                      stripped=len(issues))
     out = {}
     for cam in cameras:
         side = VIEW.get(cam, "front")

@@ -75,6 +75,7 @@ SIGN_CLASS = {
 
 # traffic-light head geometry (the xodr compiler places 0.9 m x 0.35 m heads with their bottom edge 2.5 m up)
 TL_BOTTOM, TL_HEIGHT, TL_WIDTH, TL_DEPTH = 2.5, 0.9, 0.35, 0.50   # depth: see-through of the renderer glyph bias beyond ~33 m
+FAR_SIDE_MARGIN, FAR_SIDE_SEARCH = 2.0, 80.0     # far-side repeater: m beyond the junction's far edge; junction lanes considered
 SIGN_SIZE, SIGN_CENTER_Z, SIGN_DEPTH = 0.75, 2.2, 0.10
 
 
@@ -275,10 +276,10 @@ class MapLayers:
     """
 
     def __init__(self, sim, log, wf: WorldFrame, ego_xy: np.ndarray, radius: float = 300.0,
-                 left_arrow_heads: bool = False):
+                 left_arrow_heads: bool = False, far_side_heads: bool = True):
         self.sim, self.m, self.log, self.wf, self.R = sim, sim.m, log, wf, radius
         self.tree = cKDTree(ego_xy[:: max(1, len(ego_xy) // 300)])
-        self.left_arrow_heads = left_arrow_heads
+        self.left_arrow_heads, self.far_side_heads = left_arrow_heads, far_side_heads
         self.layers: dict[str, list] = {k: [] for k in (
             "3d_lanelines", "3d_road_boundaries", "3d_crosswalks", "3d_wait_lines", "3d_poles",
             "3d_traffic_signs", "3d_road_markings", "3d_traffic_lights")}
@@ -510,6 +511,8 @@ class MapLayers:
         return best[0]
 
     def _signals(self):
+        jxy = [ln.xy for ln in self.m.lanes.values() if ln.junction != "-1"]
+        jxy = np.concatenate(jxy) if jxy else np.zeros((0, 2))
         for sg in self.m.signals():
             if not sg.dynamic:
                 continue
@@ -520,17 +523,28 @@ class MapLayers:
             normal = sg.hdg + math.pi                      # sg.hdg = direction of the traffic it governs
             n = np.array([math.cos(normal), math.sin(normal)])
             toward_lane = np.array([math.sin(normal), -math.cos(normal)])      # lateral, towards the road centre
-            specs = [("main", pos)]
-            if self.left_arrow_heads:
-                specs.append(("left", pos + toward_lane * (TL_WIDTH + 0.15)))
-            for kind, p in specs:
-                fid = f"tl_{sg.id}" + ("_left" if kind == "left" else "")
-                cub = _cuboid([*self.wf.xy(p), TL_BOTTOM + TL_HEIGHT / 2], float(self.wf.yaw(normal)),
-                              (TL_DEPTH, TL_WIDTH, TL_HEIGHT))
-                self.heads.append({"feature_id": fid, "arm": arm, "kind": kind, "signal_id": sg.id,
-                                   "pos_sim": [round(float(p[0]), 3), round(float(p[1]), 3)], "index": len(self.layers["3d_traffic_lights"])})
-                self.layers["3d_traffic_lights"].append(_lbl("cuboid3d", cub, [_text("feature_id", fid)]))
-            self._pole(pos, TL_BOTTOM + TL_HEIGHT + 0.15, behind=normal, back=TL_DEPTH / 2 + 0.1)   # pole behind the head
+            # The OpenDRIVE head stands at the stop line on the near kerb: a vehicle at the line has it beside or
+            # behind its front camera (the T1 ego entered on red with no signal in view for its last 1.5 s). A far-side
+            # repeater on the same kerb line, just beyond the junction and facing the same traffic, stays in view.
+            sites = [("", pos)]
+            if self.far_side_heads and len(jxy):
+                ahead = (jxy - pos) @ -n
+                close = np.hypot(*(jxy - pos).T) < FAR_SIDE_SEARCH
+                if close.any() and ahead[close].max() > 5.0:
+                    sites.append(("_far", pos - n * (ahead[close].max() + FAR_SIDE_MARGIN)))
+            for tag, site in sites:
+                specs = [("main", site)]
+                if self.left_arrow_heads:
+                    specs.append(("left", site + toward_lane * (TL_WIDTH + 0.15)))
+                for kind, p in specs:
+                    fid = f"tl_{sg.id}{tag}" + ("_left" if kind == "left" else "")
+                    cub = _cuboid([*self.wf.xy(p), TL_BOTTOM + TL_HEIGHT / 2], float(self.wf.yaw(normal)),
+                                  (TL_DEPTH, TL_WIDTH, TL_HEIGHT))
+                    self.heads.append({"feature_id": fid, "arm": arm, "kind": kind, "signal_id": sg.id,
+                                       "far_side": bool(tag), "pos_sim": [round(float(p[0]), 3), round(float(p[1]), 3)],
+                                       "index": len(self.layers["3d_traffic_lights"])})
+                    self.layers["3d_traffic_lights"].append(_lbl("cuboid3d", cub, [_text("feature_id", fid)]))
+                self._pole(site, TL_BOTTOM + TL_HEIGHT + 0.15, behind=normal, back=TL_DEPTH / 2 + 0.1)   # pole behind the head
 
 
 # ============================================================================== traffic-light states
@@ -575,7 +589,8 @@ def _tl_states(sim, log, heads: list[dict], tt: np.ndarray) -> tuple[dict, dict]
 # ============================================================================== export
 def export_clip(sim, log, out_root, clip_id: str, t0: float | None = None, duration: float = CHUNK_SECONDS,
                 fps: int = OUT_FPS, rig="hyperion", *, cameras=None, max_obj_range: float = 250.0,
-                map_radius: float = 300.0, left_arrow_heads: bool | None = None, overwrite: bool = False,
+                map_radius: float = 300.0, left_arrow_heads: bool | None = None, far_side_heads: bool = True,
+                overwrite: bool = False,
                 require_planar_polygons: bool = True, pad_frames: int = 0, write_vehicle_pose: bool = True) -> Path:
     """Write one RDS-HQ clip (30 Hz, ``duration`` s, Hyperion rig) from a TanitSim run and validate it.
 
@@ -661,7 +676,7 @@ def export_clip(sim, log, out_root, clip_id: str, t0: float | None = None, durat
     # ---- map + traffic lights
     protected = bool(getattr(getattr(sim, "signals", None), "enabled", False) and getattr(sim.signals, "protected", False))
     lam = protected if left_arrow_heads is None else left_arrow_heads
-    ml = MapLayers(sim, log, wf, np.stack([ex, ey], 1), map_radius, left_arrow_heads=bool(lam))
+    ml = MapLayers(sim, log, wf, np.stack([ex, ey], 1), map_radius, left_arrow_heads=bool(lam), far_side_heads=far_side_heads)
     layers = {k: {"labels": v} for k, v in ml.layers.items()}
     states, sig_info = _tl_states(sim, log, ml.heads, tt)
     tl = {"state_to_legacy_render_state": {}, "traffic_light_states": {}}

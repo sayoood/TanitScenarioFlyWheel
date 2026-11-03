@@ -17,7 +17,9 @@ Work dir `~/tsf/dev/cosmos_gen/` (mounted at `/work`): `deploy/sim_auto_thor.yam
 ## Sim-Auto patch (fits next to the LLM)
 
 Stock vLLM-Omni pre-sizes the paged KV ring for the worst case, 7 views + LiDAR = **27 GB**, and refuses to start otherwise.
-`sim_auto_kv_views.patch` adds `TSF_KV_VIEWS=N` (ring for N RGB-only views: 1 view ~4 GB, 3 views ~8 GB). RGB-only; no LiDAR.
+`sim_auto_kv_views.patch` adds `TSF_KV_VIEWS=N` (ring for N RGB-only views: 1 view ~4 GB, 3 views ~8 GB), `TSF_KV_LIDAR=1`
+(ring sized for joint camera + LiDAR requests), `TSF_LIDAR_CHUNK=N` (smaller LiDAR VAE streaming chunks) and `TSF_KV_RES=720`
+(ring sized for 720p requests, with `sim_auto_thor_720.yaml`; the checkpoint default is 480p). Empty or 0 = stock behaviour.
 
 ```bash
 # on thor, once
