@@ -253,7 +253,7 @@ def run_t1(tsir: dict, policy, out: str | Path, seconds: float | None = None, ca
                "chunk": chunk, "guard": guard, "judge": judge, "chunks": sensors.k,
                "wall_s": round(time.perf_counter() - tic, 1),
                "score": res_.score,
-               "metrics": {k: v for k, v in log.metrics.items() if k != "collisions"},
+               "metrics": log.metrics,   # incl. the first collisions (time, actor): the score alone hides who was hit
                "policy_calls": getattr(policy, "n_calls", None), "fallback_ticks": getattr(policy, "n_fallback", None),
                "timing": sensors.timing}
     (out / "t1_summary.json").write_text(json.dumps(summary, indent=1, default=float))
