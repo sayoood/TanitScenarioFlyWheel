@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from tsf.cosmos.drift import DriftGuard, saturation, sharpness
+from tsf.cosmos.drift import DriftGuard, saturation, sharpness, veil, veil_tiles
 
 
 def _scene(seed: int = 0) -> np.ndarray:
@@ -40,6 +40,29 @@ def test_guard_reanchors_a_washed_out_chain_but_not_too_often(tmp_path):
     g.reference({"front": tmp_path / "ref.png"})
     calls = [g({"front": tmp_path / "mush.png"}, tmp_path / "c")[0] for _ in range(4)]
     assert [c is None for c in calls] == [False, True, False, True]          # every min_gap-th call at most
-    never = DriftGuard(reanchor_below=0.0)
+    never = DriftGuard(reanchor_below=0.0, veil_below=0.0)
     never.reference({"front": tmp_path / "ref.png"})
     assert all(never({"front": tmp_path / "mush.png"}, tmp_path / "c")[0] is not None for _ in range(4))
+
+
+def _veiled(img: np.ndarray, alpha: float = 0.85) -> np.ndarray:
+    """A brown smear over the lower centre and the road band, as the 720p chain grew it (sky and sides stay sharp)."""
+    out = img.copy()
+    roi = out[150:400, 120:760]
+    out[150:400, 120:760] = cv2.addWeighted(roi, 1 - alpha, np.full_like(roi, (70, 105, 140)), alpha, 0)
+    return out
+
+
+def test_veil_triggers_a_reanchor_that_whole_frame_sharpness_misses(tmp_path):
+    ref, smear = _scene(), _veiled(_scene())
+    assert sharpness(smear) > 0.3 * sharpness(ref)                          # the sharpness rule alone would keep it
+    assert veil(smear, veil_tiles(ref)) < 0.5 and veil(_drift(ref, 0.6, 1.0), veil_tiles(ref)) > 0.75
+    cv2.imwrite(str(tmp_path / "ref.png"), ref)
+    cv2.imwrite(str(tmp_path / "smear.png"), smear)
+    g = DriftGuard(min_gap=1)
+    g.reference({"front": tmp_path / "ref.png"})
+    out, st = g({"front": tmp_path / "smear.png"}, tmp_path / "c")
+    assert out is None and st["reanchor"] == ["front"] and st["front"]["veil"] < 0.5
+    off = DriftGuard(min_gap=1, veil_below=0.0)
+    off.reference({"front": tmp_path / "ref.png"})
+    assert off({"front": tmp_path / "smear.png"}, tmp_path / "c")[0] is not None

@@ -3,8 +3,10 @@
     signals  : lit colour seen at every signal head that faces the camera (projected box >= 8 px tall) against its state
     vehicles : a COCO detector's vehicles against the sim's projected vehicles: recall, and detections no sim vehicle
                explains (hallucinated vehicles per frame); optional, needs torch + torchvision
-    quality  : sharpness and saturation of each chunk's last frame relative to chunk 0, and the seam ratio (mean frame
-               change across a chunk hand-off over the mean change inside a chunk; 1 = invisible seam)
+    quality  : sharpness and saturation of each chunk's last frame relative to chunk 0, the veil (median local-contrast
+               ratio of the tiles between sky and hood to chunk 0, as in ``tsf.cosmos.drift.veil``: a smear or lens
+               blobs that whole-frame sharpness misses) and the seam ratio (mean frame change across a chunk hand-off
+               over the mean change inside a chunk; 1 = invisible seam)
 
 Signals and vehicles need ``adherence/proj.json`` from ``_adherence_project.py`` (WSM venv). Self-contained (numpy, cv2;
 torch lazily) so it also runs as a plain script inside a PyTorch container:
@@ -48,6 +50,12 @@ def _sharp(img: np.ndarray) -> float:
 
 def _sat(img: np.ndarray) -> float:
     return float(cv2.cvtColor(img, cv2.COLOR_BGR2HSV)[..., 1].mean())
+
+
+def _veil_tiles(img: np.ndarray, rows: int = 4, cols: int = 8) -> np.ndarray:
+    g = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (832, 480)).astype(np.float32)[144:374]
+    th, tw = g.shape[0] // rows, 832 // cols
+    return np.array([[g[r * th:(r + 1) * th, c * tw:(c + 1) * tw].std() for c in range(cols)] for r in range(rows)])
 
 
 def lit_colours(crop: np.ndarray, max_blob: float) -> set[str]:
@@ -167,9 +175,11 @@ def score_run(run: Path, cams: list[str] | None = None, vehicles: bool = False, 
             if img is None:
                 continue
             row = {"clip": clip, "cam": cam, "sharp": _sharp(img), "sat": _sat(img)}
-            ref.setdefault(cam, row)
+            tiles = _veil_tiles(img)
+            ref.setdefault(cam, {**row, "tiles": tiles})
             row["sharp_rel"] = row["sharp"] / max(ref[cam]["sharp"], 1e-6)
             row["sat_rel"] = row["sat"] / max(ref[cam]["sat"], 1e-6)
+            row["veil"] = float(np.median(tiles / np.maximum(ref[cam]["tiles"], 1e-3)))
             if not frames_dir:                       # seams: first new frame vs the previous chunk's last frame
                 fr = _frames(r["videos"][cam])
                 if len(fr) > 2:
@@ -201,6 +211,8 @@ def summarize(rows: list[dict], seam: dict, inner: dict) -> dict:
             "sharp_rel_mean": round(float(np.mean([r["sharp_rel"] for r in rs])), 3),
             "sharp_rel_last_third": round(float(np.mean([r["sharp_rel"] for r in tail])), 3),
             "sat_rel_last_third": round(float(np.mean([r["sat_rel"] for r in tail])), 3),
+            "veil_min": round(float(min(r["veil"] for r in rs)), 2),
+            "veiled_chunks": sum(r["veil"] < 0.75 for r in rs),
             "seam_ratio": round(float(np.mean(seam[cam]) / max(np.mean(inner[cam]), 1e-6)), 2) if seam.get(cam) else None,
             "signal_sites": len(sig), "signal_judged": len(judged),
             "signal_agreement": round(sum(s["verdict"] == "match" for s in judged) / len(judged), 3) if judged else None,

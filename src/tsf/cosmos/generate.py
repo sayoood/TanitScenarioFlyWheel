@@ -688,7 +688,7 @@ def sim_windows(wsm_dir, out_dir, cameras=None, frames: int = 97, res: str = "48
     caps = resolve_captions(captions, cams, frames, scenario, fps, tsir)
     runs, ff, s = [], first_frames, start
     from tsf.cosmos.drift import DriftGuard
-    guard = DriftGuard(reanchor_below=0.0) if drift_guard else None
+    guard = DriftGuard(reanchor_below=0.0, veil_below=0.0) if drift_guard else None
     while True:
         wf = min(window_frames, start + frames - s)
         k = len(runs)

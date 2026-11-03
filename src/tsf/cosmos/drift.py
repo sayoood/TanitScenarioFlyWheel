@@ -12,7 +12,13 @@ the reference and returns every later one
      edges than a junction),
 
 and asks for a re-anchor (one request without I2V, generated from the WSM controls alone) when a frame is still far
-below the reference after that, at most every ``min_gap`` chunks.
+below the reference after that, or when a veil covers it, at most every ``min_gap`` chunks.
+
+The veil is the chain's other failure: a brown smear or lens blobs that grow from chunk to chunk over part of the image
+while the sky and poles stay sharp, so the whole-frame sharpness and saturation above do not move. In the 40 s 720p run
+a smear in the lower centre made the front camera nearly opaque from 16 to 28 s (whole-frame sharpness 69-78 against a
+reference of 80 throughout). :func:`veil` compares the local contrast of tiles between the sky and the hood with the
+reference: the median tile ratio fell to 0.74 by 10 s and to 0.35 when opaque, against 0.83 or more in clean runs.
 """
 from __future__ import annotations
 
@@ -28,6 +34,19 @@ def sharpness(bgr: np.ndarray) -> float:
 
 def saturation(bgr: np.ndarray) -> float:
     return float(cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)[..., 1].mean())
+
+
+def veil_tiles(bgr: np.ndarray, rows: int = 4, cols: int = 8, top: float = 0.3, bottom: float = 0.78) -> np.ndarray:
+    """Local contrast (std of grey) of a rows x cols grid over the band between the sky and the ego's hood, at 832x480."""
+    g = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (832, 480)).astype(np.float32)
+    band = g[int(top * 480):int(bottom * 480)]
+    th, tw = band.shape[0] // rows, 832 // cols
+    return np.array([[band[r * th:(r + 1) * th, c * tw:(c + 1) * tw].std() for c in range(cols)] for r in range(rows)])
+
+
+def veil(bgr: np.ndarray, ref_tiles: np.ndarray) -> float:
+    """Median ratio of the tiles' local contrast to the reference's: about 1 for a clean frame, low under a veil."""
+    return float(np.median(veil_tiles(bgr) / np.maximum(ref_tiles, 1e-3)))
 
 
 def _lab_stats(bgr: np.ndarray) -> np.ndarray:
@@ -57,9 +76,9 @@ def unsharp(bgr: np.ndarray, amount: float, sigma: float = 1.2) -> np.ndarray:
 
 class DriftGuard:
     def __init__(self, target: float = 0.85, max_amount: float = 1.0, reanchor_below: float = 0.3, min_gap: int = 8,
-                 step: float = 0.1):
+                 step: float = 0.1, veil_below: float = 0.75):
         self.target, self.max_amount, self.reanchor_below, self.min_gap = target, max_amount, reanchor_below, min_gap
-        self.step = step
+        self.step, self.veil_below = step, veil_below
         self.ref: dict[str, dict] = {}
         self.k = 0
         self.last_anchor = 0
@@ -68,11 +87,12 @@ class DriftGuard:
         """Record the reference frames (the first chunk's last frames) without correcting anything."""
         for cam, p in frames.items():
             img = cv2.imread(str(p))
-            self.ref[cam] = {"lab": _lab_stats(img), "sharp": sharpness(img), "sat": saturation(img)}
+            self.ref[cam] = {"lab": _lab_stats(img), "sharp": sharpness(img), "sat": saturation(img),
+                             "tiles": veil_tiles(img)}
 
     def __call__(self, frames: dict[str, str | Path], out_dir: str | Path) -> tuple[dict[str, Path] | None, dict]:
         """Corrected conditioning PNGs for the next request (``None`` = re-anchor: generate it without I2V) and the
-        per-camera stats {sharp, sharp_ref, sat, sat_ref, amount}; the first call only records the references."""
+        per-camera stats {sharp, sharp_ref, sat, sat_ref, amount, veil}; the first call only records the references."""
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         self.k += 1
@@ -84,6 +104,7 @@ class DriftGuard:
                 continue
             img = cv2.imread(str(p))
             ref = self.ref[cam]
+            v = veil(img, ref["tiles"])                  # on the generated frame: no correction lifts a veil
             img = match_colour(img, ref["lab"])
             goal, amount, s = self.target * ref["sharp"], 0.0, sharpness(img)
             while s < goal and amount < self.max_amount:
@@ -97,8 +118,8 @@ class DriftGuard:
             cv2.imwrite(str(q), img)
             out[cam] = q
             stats[cam] = {"sharp": round(s, 1), "sharp_ref": round(ref["sharp"], 1), "sat": round(saturation(img), 1),
-                          "sat_ref": round(ref["sat"], 1), "amount": amount}
-            if s < self.reanchor_below * ref["sharp"]:
+                          "sat_ref": round(ref["sat"], 1), "amount": amount, "veil": round(v, 2)}
+            if s < self.reanchor_below * ref["sharp"] or v < self.veil_below:
                 low.append(cam)
         if low and self.k - self.last_anchor >= self.min_gap:
             self.last_anchor = self.k
