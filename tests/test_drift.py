@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from tsf.cosmos.drift import DriftGuard, box_cover, saturation, sharpness, veil, veil_tiles
+from tsf.cosmos.drift import DriftGuard, box_cover, detail, detail_tiles, saturation, sharpness, veil, veil_tiles
 
 
 def _scene(seed: int = 0) -> np.ndarray:
@@ -95,3 +95,41 @@ def test_veil_reanchors_only_for_the_cameras_it_is_trusted_on(tmp_path):
     out, st = g({"cross": tmp_path / "smear.png", "front": tmp_path / "ref.png"}, tmp_path / "c")
     assert out is not None and st["cross"]["veil"] < 0.5                    # reported, not acted on
     assert g({"cross": tmp_path / "ref.png", "front": tmp_path / "smear.png"}, tmp_path / "c")[0] is None
+
+
+def _shaded(img: np.ndarray) -> np.ndarray:
+    """The road turned into smooth shading, as the protected-left chain did it: as much contrast per tile, no texture."""
+    out = img.copy()
+    y, x = np.mgrid[150:400, 0:832]
+    out[150:400] = (120 + 60 * np.sin(2 * np.pi * (x + y) / 120)).astype(np.uint8)[..., None]
+    return out
+
+
+def test_detail_catches_a_road_turned_to_shading_that_the_veil_misses(tmp_path):
+    ref, shaded = _scene(), _shaded(_scene())
+    assert veil(shaded, veil_tiles(ref)) > 0.75 and detail(shaded, detail_tiles(ref)) < 0.3
+    assert detail(_drift(ref, 0.6, 1.0), detail_tiles(ref)) > 0.65                 # a slightly soft frame passes
+    cv2.imwrite(str(tmp_path / "ref.png"), ref)
+    cv2.imwrite(str(tmp_path / "shaded.png"), shaded)
+    g = DriftGuard(min_gap=1, detail_below=0.65)
+    g.reference({"front": tmp_path / "ref.png"})
+    out, st = g({"front": tmp_path / "shaded.png"}, tmp_path / "c")
+    assert out is None and st["reanchor"] == ["front"] and st["front"]["detail"] < 0.3
+    off = DriftGuard(min_gap=1)
+    off.reference({"front": tmp_path / "ref.png"})
+    assert off({"front": tmp_path / "shaded.png"}, tmp_path / "c")[0] is not None
+
+
+def test_after_a_reanchor_the_structure_is_judged_against_the_fresh_frame(tmp_path):
+    """Past a turn the re-anchored view (here a softer, different scene) no longer resembles chunk 0."""
+    other = _drift(_scene(1), 1.0, 1.0)
+    assert detail(other, detail_tiles(_scene())) < 0.65
+    for name, img in (("ref", _scene()), ("shaded", _shaded(_scene())), ("other", other)):
+        cv2.imwrite(str(tmp_path / f"{name}.png"), img)
+    g = DriftGuard(min_gap=1, detail_below=0.65, reanchor_below=0.0)            # sharpness rule off: structure only
+    g.reference({"front": tmp_path / "ref.png"})
+    assert g({"front": tmp_path / "shaded.png"}, tmp_path / "c")[0] is None      # re-anchor
+    out, st = g({"front": tmp_path / "other.png"}, tmp_path / "c")             # the re-anchored chunk's frame
+    assert out is not None and st["front"]["detail"] == 1.0
+    out, st = g({"front": tmp_path / "other.png"}, tmp_path / "c")
+    assert out is not None and st["front"]["sat_ref"] == round(saturation(_scene()), 1)   # colour keeps chunk 0

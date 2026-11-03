@@ -27,6 +27,15 @@ covers in either frame, and judges nothing when fewer than half of them are left
 score still fell to 0.68-0.72 on the cross-right camera with no smear in view: a side camera's view changes completely
 along the drive, so chunk 0 is no reference for it. ``veil_cams`` limits the veil re-anchor to the cameras whose view
 stays alike (the front ones); on the smeared left-turn run the masked front-only score still re-anchors at 10.7 s.
+
+The third failure keeps the veil score up: the road turns into smooth shading. In the 40 s protected-left rerun with
+the masked front-only veil the road lost its texture and markings from about 12 s, the clouds became repeated blobs and
+a haze lay over every camera from 16 s, while the veil stayed at 0.83-1.1 (a smooth gradient keeps a tile's std) and
+the sharpness at 73-84 (poles and signs keep the Laplacian); it re-anchored only at 28 s, in the middle of the turn.
+:func:`detail` compares the tiles' fine detail (grey minus its blur): there it fell to 0.58 by 12 s, on the smeared
+left-turn run to 0.57 by 11 s, against 0.8-1.0 in the first 8 s of both. A re-anchor moves the structural references
+(veil and detail tiles, vehicle cover) to the fresh frame, since the view by then (a junction, a turn) no longer
+resembles chunk 0; colour and sharpness keep chunk 0, so the run keeps its look.
 """
 from __future__ import annotations
 
@@ -44,34 +53,51 @@ def saturation(bgr: np.ndarray) -> float:
     return float(cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)[..., 1].mean())
 
 
-def veil_tiles(bgr: np.ndarray, rows: int = 4, cols: int = 8, top: float = 0.3, bottom: float = 0.78) -> np.ndarray:
-    """Local contrast (std of grey) of a rows x cols grid over the band between the sky and the ego's hood, at 832x480."""
-    g = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (832, 480)).astype(np.float32)
-    band = g[int(top * 480):int(bottom * 480)]
+def _grid(img: np.ndarray, stat, rows: int = 4, cols: int = 8, top: float = 0.3, bottom: float = 0.78) -> np.ndarray:
+    """``stat`` of each tile of a rows x cols grid over the band between the sky and the ego's hood of a 480x832 image."""
+    band = img[int(top * 480):int(bottom * 480)]
     th, tw = band.shape[0] // rows, 832 // cols
-    return np.array([[band[r * th:(r + 1) * th, c * tw:(c + 1) * tw].std() for c in range(cols)] for r in range(rows)])
+    return np.array([[stat(band[r * th:(r + 1) * th, c * tw:(c + 1) * tw]) for c in range(cols)] for r in range(rows)])
 
 
-def box_cover(boxes: list, size, rows: int = 4, cols: int = 8, top: float = 0.3, bottom: float = 0.78) -> np.ndarray:
-    """Share of each :func:`veil_tiles` tile covered by the boxes ``[u0, v0, u1, v1]`` given in pixels of ``size`` (w, h)."""
+def veil_tiles(bgr: np.ndarray) -> np.ndarray:
+    """Local contrast (std of grey) of the tiles, at 832x480."""
+    return _grid(cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (832, 480)).astype(np.float32), np.std)
+
+
+def detail_tiles(bgr: np.ndarray, sigma: float = 2.0) -> np.ndarray:
+    """Fine detail (std of grey minus its blur) of the tiles, at 832x480: road texture, markings, edges; not shading."""
+    g = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (832, 480), interpolation=cv2.INTER_AREA).astype(np.float32)
+    return _grid(g - cv2.GaussianBlur(g, (0, 0), sigma), np.std)
+
+
+def box_cover(boxes: list, size) -> np.ndarray:
+    """Share of each tile covered by the boxes ``[u0, v0, u1, v1]`` given in pixels of ``size`` (w, h)."""
     m = np.zeros((480, 832), np.float32)
     sx, sy = 832 / size[0], 480 / size[1]
     for u0, v0, u1, v1 in boxes:
         m[int(v0 * sy):int(np.ceil(v1 * sy)), int(u0 * sx):int(np.ceil(u1 * sx))] = 1.0
-    band = m[int(top * 480):int(bottom * 480)]
-    th, tw = band.shape[0] // rows, 832 // cols
-    return np.array([[band[r * th:(r + 1) * th, c * tw:(c + 1) * tw].mean() for c in range(cols)] for r in range(rows)])
+    return _grid(m, np.mean)
 
 
-def veil(bgr: np.ndarray, ref_tiles: np.ndarray, valid: np.ndarray | None = None, min_tiles: int = 16) -> float:
-    """Median ratio of the tiles' local contrast to the reference's: about 1 for a clean frame, low under a veil.
-    ``valid``: the tiles to compare (no vehicle on them); with fewer than ``min_tiles`` left nothing is judged (1.0)."""
-    r = veil_tiles(bgr) / np.maximum(ref_tiles, 1e-3)
+def _ratio(tiles: np.ndarray, ref_tiles: np.ndarray, valid: np.ndarray | None, min_tiles: int) -> float:
+    r = tiles / np.maximum(ref_tiles, 1e-3)
     if valid is not None:
         r = r[valid]
         if r.size < min_tiles:
             return 1.0
     return float(np.median(r))
+
+
+def veil(bgr: np.ndarray, ref_tiles: np.ndarray, valid: np.ndarray | None = None, min_tiles: int = 16) -> float:
+    """Median ratio of the tiles' local contrast to the reference's: about 1 for a clean frame, low under a veil.
+    ``valid``: the tiles to compare (no vehicle on them); with fewer than ``min_tiles`` left nothing is judged (1.0)."""
+    return _ratio(veil_tiles(bgr), ref_tiles, valid, min_tiles)
+
+
+def detail(bgr: np.ndarray, ref_tiles: np.ndarray, valid: np.ndarray | None = None, min_tiles: int = 16) -> float:
+    """As :func:`veil` for :func:`detail_tiles`: low when the road has turned into smooth shading."""
+    return _ratio(detail_tiles(bgr), ref_tiles, valid, min_tiles)
 
 
 def _lab_stats(bgr: np.ndarray) -> np.ndarray:
@@ -101,12 +127,15 @@ def unsharp(bgr: np.ndarray, amount: float, sigma: float = 1.2) -> np.ndarray:
 
 class DriftGuard:
     def __init__(self, target: float = 0.85, max_amount: float = 1.0, reanchor_below: float = 0.3, min_gap: int = 8,
-                 step: float = 0.1, veil_below: float = 0.75, veil_cams: tuple[str, ...] | None = None):
+                 step: float = 0.1, veil_below: float = 0.75, veil_cams: tuple[str, ...] | None = None,
+                 detail_below: float = 0.0):
         self.target, self.max_amount, self.reanchor_below, self.min_gap = target, max_amount, reanchor_below, min_gap
-        self.step, self.veil_below, self.veil_cams = step, veil_below, veil_cams    # veil_cams None: every camera
+        self.step, self.veil_below, self.detail_below = step, veil_below, detail_below      # 0: that check is off
+        self.veil_cams = veil_cams                  # the cameras whose veil and detail may re-anchor; None: every one
         self.ref: dict[str, dict] = {}
         self.k = 0
         self.last_anchor = 0
+        self.rebase = False                         # the next frames are a re-anchor's: their structure is the new ref
 
     def reference(self, frames: dict[str, str | Path], boxes: dict | None = None) -> None:
         """Record the reference frames (the first chunk's last frames) without correcting anything. ``boxes``: the
@@ -114,7 +143,7 @@ class DriftGuard:
         for cam, p in frames.items():
             img = cv2.imread(str(p))
             self.ref[cam] = {"lab": _lab_stats(img), "sharp": sharpness(img), "sat": saturation(img),
-                             "tiles": veil_tiles(img), "cover": self._cover(boxes, cam)}
+                             "tiles": veil_tiles(img), "detail": detail_tiles(img), "cover": self._cover(boxes, cam)}
 
     @staticmethod
     def _cover(boxes: dict | None, cam: str) -> np.ndarray:
@@ -124,11 +153,12 @@ class DriftGuard:
     def __call__(self, frames: dict[str, str | Path], out_dir: str | Path,
                  boxes: dict | None = None) -> tuple[dict[str, Path] | None, dict]:
         """Corrected conditioning PNGs for the next request (``None`` = re-anchor: generate it without I2V) and the
-        per-camera stats {sharp, sharp_ref, sat, sat_ref, amount, veil, veil_tiles}; the first call only records the
-        references. ``boxes`` (as in :meth:`reference`): the sim's vehicles in these frames, kept out of the veil."""
+        per-camera stats {sharp, sharp_ref, sat, sat_ref, amount, veil, detail, veil_tiles}; the first call only records
+        the references. ``boxes`` (as in :meth:`reference`): the sim's vehicles in these frames, kept out of the veil."""
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         self.k += 1
+        rebase, self.rebase = self.rebase, False
         out, stats, low = {}, {}, []
         for cam, p in frames.items():
             if cam not in self.ref:
@@ -137,8 +167,11 @@ class DriftGuard:
                 continue
             img = cv2.imread(str(p))
             ref = self.ref[cam]
+            if rebase:
+                ref.update(tiles=veil_tiles(img), detail=detail_tiles(img), cover=self._cover(boxes, cam))
             free = (self._cover(boxes, cam) < 0.25) & (ref["cover"] < 0.25)
             v = veil(img, ref["tiles"], free)            # on the generated frame: no correction lifts a veil
+            d = detail(img, ref["detail"], free)
             img = match_colour(img, ref["lab"])
             goal, amount, s = self.target * ref["sharp"], 0.0, sharpness(img)
             while s < goal and amount < self.max_amount:
@@ -153,11 +186,11 @@ class DriftGuard:
             out[cam] = q
             stats[cam] = {"sharp": round(s, 1), "sharp_ref": round(ref["sharp"], 1), "sat": round(saturation(img), 1),
                           "sat_ref": round(ref["sat"], 1), "amount": amount, "veil": round(v, 2),
-                          "veil_tiles": int(free.sum())}
-            if s < self.reanchor_below * ref["sharp"] or (
-                    v < self.veil_below and (self.veil_cams is None or cam in self.veil_cams)):
+                          "detail": round(d, 2), "veil_tiles": int(free.sum())}
+            trusted = self.veil_cams is None or cam in self.veil_cams
+            if s < self.reanchor_below * ref["sharp"] or trusted and (v < self.veil_below or d < self.detail_below):
                 low.append(cam)
         if low and self.k - self.last_anchor >= self.min_gap:
-            self.last_anchor = self.k
+            self.last_anchor, self.rebase = self.k, True
             return None, {**stats, "reanchor": low}
         return out, stats

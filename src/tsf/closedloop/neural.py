@@ -30,6 +30,7 @@ from tsf.sim.engine import SimLog, TanitSim, metrics
 REFE_CAMS = ["camera_front_wide_120fov", "camera_cross_left_120fov", "camera_cross_right_120fov",
              "camera_rear_left_70fov", "camera_rear_right_70fov"]
 FRONT_CAMS = ("camera_front_wide_120fov", "camera_front_tele_30fov")      # the cameras that see the ego's signal
+NUMBER = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine"}
 CHUNK = 17                                           # frames per Sim-Auto request (1 conditioning + 16 new)
 FPS = 30
 
@@ -66,20 +67,33 @@ def vehicle_cast(tsir: dict, projs: list[dict | None], cams: list[str], max_dept
     and category. ``projs``: :func:`tsf.cosmos.adherence.project_clip` of the frames the chunk spans (its conditioning
     frame and its last frame); no projection, no sentences. The drive-long captions named road users per direction from
     the plan: the front caption left out the van ahead (generated white, blue after a re-anchor), and a truck in a block
-    that also named a yellow bus came back as a bus. Named per chunk from the map, a re-drawn chunk gets the same looks."""
+    that also named a yellow bus came back as a bus. Named per chunk from the map, a re-drawn chunk gets the same looks.
+    Listed in one sentence the colours still leaked ("a grey car, a yellow bus, a red car and a white truck" drew the
+    truck yellow), so each vehicle gets its own sentence with where it is in the view: the third of the width its box
+    centre falls in, far away beyond 50 m, close within 10 m (from the projection where it is nearest)."""
     if not any(projs):
         return {}
     look = {a["id"]: _vehicle_name(a) for a in tsir["actors"] if a.get("role") != "ego"}
     out = {}
     for cam in cams:
-        near: dict[str, float] = {}
+        near: dict[str, tuple[float, float]] = {}       # id -> (depth, box centre as a share of the width)
         for p in projs:
-            for o in ((p or {}).get(cam) or {}).get("objects", []):
+            r = (p or {}).get(cam) or {}
+            for o in r.get("objects", []):
                 if o["id"] in look and o["depth"] <= max_depth and o["box"][3] - o["box"][1] >= min_px:
-                    near[o["id"]] = min(near.get(o["id"], max_depth), o["depth"])
-        names = [look[i] for i in sorted(near, key=near.get)]
-        out[cam] = ("The road in view is empty." if not names else f"The only vehicle in view is {names[0]}."
-                    if len(names) == 1 else f"The only vehicles in view are {', '.join(names[:-1])} and {names[-1]}.")
+                    if o["depth"] < near.get(o["id"], (max_depth + 1,))[0]:
+                        near[o["id"]] = (o["depth"], (o["box"][0] + o["box"][2]) / 2 / r["size"][0])
+        if not near:
+            out[cam] = "The road in view is empty."
+            continue
+        n = len(near)
+        lines = [f"Exactly {NUMBER.get(n, str(n))} vehicle{'s are' if n > 1 else ' is'} in view."]
+        for i in sorted(near, key=lambda i: near[i][0]):
+            depth, u = near[i]
+            where = "on the left" if u < 1 / 3 else "on the right" if u > 2 / 3 else "in the middle"
+            where += ", far away" if depth > 50 else ", close" if depth < 10 else ""
+            lines.append(f"{look[i][0].upper()}{look[i][1:]} is {where}.")
+        out[cam] = " ".join(lines)
     return out
 
 
@@ -143,7 +157,7 @@ class CosmosSensors:
         cap_file.write_text(json.dumps(self.caps, indent=1))
         if self.span:
             span_file.write_text(json.dumps({"span_s": self.span}))
-        self.guard = DriftGuard(veil_cams=FRONT_CAMS) if guard and not dry else None
+        self.guard = DriftGuard(veil_cams=FRONT_CAMS, detail_below=0.65) if guard and not dry else None
         self.last: dict[str, str] | None = None
         self.proj: dict | None = None                       # the sim projected into the last chunk's last frame
         self.k, self.timing = 0, []
