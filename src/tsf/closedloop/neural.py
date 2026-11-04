@@ -213,25 +213,46 @@ class CosmosSensors:
         """Keep chunk ``cid`` unless the front camera shows a signal colour the sim does not; then generate it once more
         with another seed (``regenerate(out_dir, seed_offset)``) and keep whichever attempt has fewer wrong colours. A
         promoted re-roll takes the chunk's directory; the first attempt moves to ``<cid>_rejected``."""
-        import shutil
         first = self._verdicts(cid, r)
         info = {"first": first}
         if "wrong" not in first:
             return r, info
-        gen = self.out / "gen"
-        alt = regenerate(gen / f"{cid}_retry", 1000)
+        alt = regenerate(self.out / "gen" / f"{cid}_retry", 1000)
         info["retry"] = self._verdicts(cid, alt)
         if info["retry"].count("wrong") < first.count("wrong"):
-            shutil.rmtree(gen / f"{cid}_rejected", ignore_errors=True)
-            (gen / cid).rename(gen / f"{cid}_rejected")
-            (gen / f"{cid}_retry").rename(gen / cid)
-            res_p = gen / cid / "result.json"
-            res_p.write_text(res_p.read_text().replace(f"{cid}_retry", cid))
-            alt = json.loads(json.dumps(alt).replace(f"{cid}_retry", cid))
             info["kept"] = "retry"
-            return alt, info
+            return self._promote(cid, "retry", alt), info
         info["kept"] = "first"
         return r, info
+
+    def _promote(self, cid: str, tag: str, alt: dict) -> dict:
+        """Re-roll ``<cid>_<tag>`` takes the chunk's directory; the attempt there moves to ``<cid>_rejected``."""
+        import shutil
+        gen = self.out / "gen"
+        shutil.rmtree(gen / f"{cid}_rejected", ignore_errors=True)
+        (gen / cid).rename(gen / f"{cid}_rejected")
+        (gen / f"{cid}_{tag}").rename(gen / cid)
+        res_p = gen / cid / "result.json"
+        res_p.write_text(res_p.read_text().replace(f"{cid}_{tag}", cid))
+        return json.loads(json.dumps(alt).replace(f"{cid}_{tag}", cid))
+
+    def _hooded(self, cid: str, r: dict, regenerate, tries: int = 2) -> tuple[dict, dict]:
+        """A redraw (a chunk generated without conditioning frames) draws its own hood; when that shows around the
+        pasted one (:meth:`Hood.leak` above :data:`LEAK_ABOVE`) generate it again with other seeds, up to ``tries``
+        times, and keep the attempt that leaks least, before the paste."""
+        from tsf.cosmos.hood import LEAK_ABOVE
+        cam = next(c for c in self.hood.cams if c in r["last_frames"])
+        score = lambda x: round(self.hood.leak(cv2.imread(str(x["last_frames"][cam])), cam), 3)
+        best, scores = (0, r), [score(r)]
+        for i in range(1, tries + 1):
+            if scores[best[0]] <= LEAK_ABOVE:
+                break
+            alt = regenerate(self.out / "gen" / f"{cid}_hood{i}", 1000 * (i + 1))
+            scores.append(score(alt))
+            if scores[-1] < scores[best[0]]:
+                best = (i, alt)
+        info = {"leak": scores, "kept": best[0]}
+        return (self._promote(cid, f"hood{best[0]}", best[1]) if best[0] else r), info
 
     def _cached(self, cid: str) -> dict | None:
         """A chunk an interrupted run already generated (``--resume``): its result plus the last frames."""
@@ -250,7 +271,7 @@ class CosmosSensors:
         t0 = t_end - (self.chunk - 1) / FPS
         tic = time.perf_counter()
         t_exp = t_wsm = 0.0
-        drift = judged = None
+        drift = judged = hooded = None
         signal = signal_caption(sim, t0, t_end) if self.span else ""
         r = None if self.dry else self._cached(cid)
         if r is None:
@@ -282,6 +303,8 @@ class CosmosSensors:
             r = gen(self.out / "gen" / cid)
             if self.judge:
                 r, judged = self._judged(cid, r, gen)
+            if self.hood is not None and k and first is None:
+                r, hooded = self._hooded(cid, r, gen)
             if self.hood is not None and k:
                 self.hood(r["last_frames"], r["videos"])
         else:
@@ -296,7 +319,7 @@ class CosmosSensors:
         self.timing.append({"chunk": k, "t_world": round(t_end, 3), "export_s": round(t_exp, 1),
                             "wsm_s": round(t_wsm, 1), "cosmos_s": round(r["request_s"], 1),
                             **({"signal": signal} if signal else {}), **({"drift": drift} if drift else {}),
-                            **({"judge": judged} if judged else {})})
+                            **({"judge": judged} if judged else {}), **({"hood": hooded} if hooded else {})})
         # Sim-Auto's 480p preset (832x480) is a non-uniform rescale of the 16:9 control geometry: undo it for the rig
         return {c: cv2.resize(cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB), (1280, 720), interpolation=cv2.INTER_CUBIC)
                 for c, p in self.last.items()}
