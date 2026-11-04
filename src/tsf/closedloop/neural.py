@@ -154,6 +154,7 @@ class CosmosSensors:
                  dry: bool = False, resume: bool = False, duration: float | None = None, guard: bool = True,
                  chunk: int = CHUNK, judge: bool = False):
         from tsf.cosmos.drift import DriftGuard
+        from tsf.cosmos.hood import Hood
         from tsf.cosmos.llm_captions import llm_captions
         self.tsir, self.out, self.cams, self.res, self.dry, self.resume = tsir, out, cams, res, dry, resume
         self.chunk = chunk                                  # frames per request: 4k+1, 1 conditioning + chunk-1 new
@@ -174,6 +175,7 @@ class CosmosSensors:
         if self.span:
             span_file.write_text(json.dumps({"span_s": self.span}))
         self.guard = DriftGuard(veil_cams=FRONT_CAMS, detail_below=0.65, marks_below=0.6) if guard and not dry else None
+        self.hood = Hood() if not dry else None              # chunk 0's hood on every later front frame
         self.last: dict[str, str] | None = None
         self.ctrl: dict[str, Path] | None = None            # the last chunk's control frames (front cameras) at its end
         self.proj: dict | None = None                       # the sim projected into the last chunk's last frame
@@ -280,11 +282,15 @@ class CosmosSensors:
             r = gen(self.out / "gen" / cid)
             if self.judge:
                 r, judged = self._judged(cid, r, gen)
+            if self.hood is not None and k:
+                self.hood(r["last_frames"], r["videos"])
         else:
             proj = self._project(cid)                                # resumed: the chunk's export is still on disk
             ctrl_last = {c: p for c in FRONT_CAMS if (p := self.out / "wsm" / cid / f"last_{c}.png").exists()}
         if self.guard is not None and k == 0:
             self.guard.reference(r["last_frames"], _boxes(proj), ctrl_last)
+        if self.hood is not None and k == 0:
+            self.hood.reference(r["last_frames"])
         self.last, self.proj, self.ctrl = r["last_frames"], proj, ctrl_last
         self.k += 1
         self.timing.append({"chunk": k, "t_world": round(t_end, 3), "export_s": round(t_exp, 1),
