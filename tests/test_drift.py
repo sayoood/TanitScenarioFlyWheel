@@ -192,3 +192,35 @@ def test_the_colour_correction_leaves_a_vehicle_its_colour_given_its_box(tmp_pat
 
     red = cv2.cvtColor(car, cv2.COLOR_BGR2LAB)[200:380, 350:650, 1].mean()
     assert abs(red_after(boxes) - red) < 6 and red - red_after(None) > 15
+
+
+def test_a_redraw_gets_the_reference_light_back_in_one_step(tmp_path):
+    """The redraw after the truck passed came out darker and much harder on every camera (L spread 34-46 against
+    21-25); the limited steps took 4-8 chunks to bring it back."""
+    ref = _scene()
+    lab = cv2.cvtColor(ref, cv2.COLOR_BGR2LAB).astype(np.float64)
+    lab[..., 0] = (lab[..., 0] - lab[..., 0].mean()) * 1.4 + lab[..., 0].mean() - 12
+    for name, img in (("ref", ref), ("shaded", _shaded(ref)),
+                      ("dark", cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR))):
+        cv2.imwrite(str(tmp_path / f"{name}.png"), img)
+
+    def light(g, boxes=None):
+        out, _ = g({"front": tmp_path / "dark.png"}, tmp_path / "c", boxes=boxes)
+        L = cv2.cvtColor(cv2.imread(str(out["front"])), cv2.COLOR_BGR2LAB)[..., 0].astype(float)
+        return L.mean() - L_ref.mean(), L.std() / L_ref.std()
+
+    def redraw():
+        g = DriftGuard(min_gap=1, detail_below=0.65, reanchor_below=0.0)
+        g.reference({"front": tmp_path / "ref.png"})
+        assert g({"front": tmp_path / "shaded.png"}, tmp_path / "c")[0] is None  # re-anchor
+        return g
+
+    L_ref = cv2.cvtColor(ref, cv2.COLOR_BGR2LAB)[..., 0].astype(float)
+    chain = DriftGuard(reanchor_below=0.0, veil_below=0.0)
+    chain.reference({"front": tmp_path / "ref.png"})
+    shift, spread = light(chain)
+    assert shift < -6 and spread > 1.1                                          # one limited step
+    shift, spread = light(redraw())                                              # the redraw's frame
+    assert abs(shift) < 1.5 and abs(spread - 1) < 0.06
+    van = {"front": {"size": [832, 480], "boxes": [[0, 0, 832, 300]]}}           # 62 % of the view
+    assert light(redraw(), van)[0] < -6

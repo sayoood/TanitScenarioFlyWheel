@@ -6,7 +6,8 @@ by t = 13 s and its mean saturation climbed from 70 to 105. Per camera the guard
 the reference and returns every later one
 
   1. colour-corrected: Lab a/b mean and spread moved back to the reference; L contrast and mean pulled back by a
-     limited step per chunk, so a slow real lighting change survives but accumulated haze does not,
+     limited step per chunk, so a slow real lighting change survives but accumulated haze does not (a re-anchor's
+     frames all the way at once, see below),
   2. re-sharpened: an unsharp mask, raised in small steps, just strong enough to bring the sharpness back toward the
      reference without overshooting it (capped, since part of a sharpness drop is content: an empty road has fewer
      edges than a junction),
@@ -50,6 +51,14 @@ after each re-anchor.
 The colour correction itself recoloured vehicles: the a/b chroma of the whole frame went back to chunk 0's, so a red
 car filling a third of a cross camera after a re-anchor came back brown one chunk later. With the sim's boxes the
 statistics come from the pixels outside them; the transform still applies to the whole frame.
+
+A re-anchor's exposure is the generator's own, since nothing conditions it: in the next 40 s protected-left rerun the
+six redraws came out with an L spread (outside the vehicles) of 25-46 against 21-25 along the chain, the one after the
+oncoming truck passed the ego at 34.7 s as dark ground under a bright sky on every camera, and the limited steps above
+took 4-8 chunks (up to 4 s) to bring each back. A redraw has broken continuity already, so its frames are moved all
+the way to the reference in one step, unless vehicles cover more than 30 % of the view: then what is left outside
+them need not stand for the scene (the van filling a cross camera left blown-out sky, L 166, and matching that turned
+the frame dark), and the limited step applies.
 """
 from __future__ import annotations
 
@@ -243,7 +252,9 @@ class DriftGuard:
                 ref["marks"] = mk
             elif mk is not None:
                 mk_ratio = mk / max(ref["marks"], 1e-3)
-            img = match_colour(img, ref["lab"], keep=~self._mask(boxes, cam, img.shape[:2]))
+            keep = ~self._mask(boxes, cam, img.shape[:2])
+            steps = {"max_contrast_step": np.inf, "max_light_step": np.inf} if rebase and keep.mean() >= 0.7 else {}
+            img = match_colour(img, ref["lab"], keep=keep, **steps)
             goal, amount, s = self.target * ref["sharp"], 0.0, sharpness(img)
             while s < goal and amount < self.max_amount:
                 a = round(amount + self.step, 2)
