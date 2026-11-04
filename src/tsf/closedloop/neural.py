@@ -61,8 +61,20 @@ def _vehicle_name(a: dict) -> str:
     return ("an " if words[0].lower() in "aeiou" or words.startswith("SUV") else "a ") + words
 
 
+def _visible(objects: list[dict], size, scale: int = 4) -> dict[str, float]:
+    """Share of each object's box that no nearer object's box covers (on a grid of ``scale`` pixels)."""
+    w, h = int(size[0] // scale) + 1, int(size[1] // scale) + 1
+    seen, out = np.zeros((h, w), bool), {}
+    for o in sorted(objects, key=lambda o: o["depth"]):
+        u0, v0, u1, v1 = (int(c // scale) for c in o["box"])
+        cell = np.s_[max(v0, 0):min(v1 + 1, h), max(u0, 0):min(u1 + 1, w)]
+        out[o["id"]] = 1.0 - float(seen[cell].mean()) if seen[cell].size else 0.0
+        seen[cell] = True
+    return out
+
+
 def vehicle_cast(tsir: dict, projs: list[dict | None], cams: list[str], max_depth: float = 120.0,
-                 min_px: float = 6.0) -> dict[str, str]:
+                 min_px: float = 6.0, min_visible: float = 0.3) -> dict[str, str]:
     """One caption sentence per camera naming the vehicles the map shows in it, nearest first, by the scenario's colour
     and category. ``projs``: :func:`tsf.cosmos.adherence.project_clip` of the frames the chunk spans (its conditioning
     frame and its last frame); no projection, no sentences. The drive-long captions named road users per direction from
@@ -70,7 +82,9 @@ def vehicle_cast(tsir: dict, projs: list[dict | None], cams: list[str], max_dept
     that also named a yellow bus came back as a bus. Named per chunk from the map, a re-drawn chunk gets the same looks.
     Listed in one sentence the colours still leaked ("a grey car, a yellow bus, a red car and a white truck" drew the
     truck yellow), so each vehicle gets its own sentence with where it is in the view: the third of the width its box
-    centre falls in, far away beyond 50 m, close within 10 m (from the projection where it is nearest)."""
+    centre falls in, far away beyond 50 m, close within 10 m (from the projection where it is nearest). A vehicle that
+    nearer ones hide is not named: under ``min_visible`` of its box uncovered in every projection. The yellow bus
+    behind the van beside the ego was named "on the right, close" for 6 s, and its yellow went onto the truck."""
     if not any(projs):
         return {}
     look = {a["id"]: _vehicle_name(a) for a in tsir["actors"] if a.get("role") != "ego"}
@@ -79,8 +93,10 @@ def vehicle_cast(tsir: dict, projs: list[dict | None], cams: list[str], max_dept
         near: dict[str, tuple[float, float]] = {}       # id -> (depth, box centre as a share of the width)
         for p in projs:
             r = (p or {}).get(cam) or {}
+            seen = _visible(r.get("objects", []), r.get("size", (1, 1)))
             for o in r.get("objects", []):
-                if o["id"] in look and o["depth"] <= max_depth and o["box"][3] - o["box"][1] >= min_px:
+                if (o["id"] in look and o["depth"] <= max_depth and o["box"][3] - o["box"][1] >= min_px
+                        and seen[o["id"]] >= min_visible):
                     if o["depth"] < near.get(o["id"], (max_depth + 1,))[0]:
                         near[o["id"]] = (o["depth"], (o["box"][0] + o["box"][2]) / 2 / r["size"][0])
         if not near:
@@ -157,8 +173,9 @@ class CosmosSensors:
         cap_file.write_text(json.dumps(self.caps, indent=1))
         if self.span:
             span_file.write_text(json.dumps({"span_s": self.span}))
-        self.guard = DriftGuard(veil_cams=FRONT_CAMS, detail_below=0.65) if guard and not dry else None
+        self.guard = DriftGuard(veil_cams=FRONT_CAMS, detail_below=0.65, marks_below=0.6) if guard and not dry else None
         self.last: dict[str, str] | None = None
+        self.ctrl: dict[str, Path] | None = None            # the last chunk's control frames (front cameras) at its end
         self.proj: dict | None = None                       # the sim projected into the last chunk's last frame
         self.k, self.timing = 0, []
 
@@ -248,9 +265,12 @@ class CosmosSensors:
                                                                               -1))), cv2.COLOR_BGR2RGB)
                         for c, p in ctrl.items()}
             proj = self._project(cid)
+            ctrl_last = {c: generate.extract_frames(p, {self.chunk - 1: self.out / "wsm" / cid / f"last_{c}.png"})[
+                self.chunk - 1] for c, p in ctrl.items() if c in FRONT_CAMS}
             first = self.last
             if self.guard is not None and first:                     # None: re-anchor on the controls
-                first, drift = self.guard(first, self.out / "gen" / cid / "cond", boxes=_boxes(self.proj))
+                first, drift = self.guard(first, self.out / "gen" / cid / "cond", boxes=_boxes(self.proj),
+                                          controls=self.ctrl)
             cast = vehicle_cast(self.tsir, [self.proj, proj], self.cams)
 
             def gen(out_dir: Path, seed_offset: int = 0) -> dict:
@@ -262,9 +282,10 @@ class CosmosSensors:
                 r, judged = self._judged(cid, r, gen)
         else:
             proj = self._project(cid)                                # resumed: the chunk's export is still on disk
+            ctrl_last = {c: p for c in FRONT_CAMS if (p := self.out / "wsm" / cid / f"last_{c}.png").exists()}
         if self.guard is not None and k == 0:
-            self.guard.reference(r["last_frames"], _boxes(proj))
-        self.last, self.proj = r["last_frames"], proj
+            self.guard.reference(r["last_frames"], _boxes(proj), ctrl_last)
+        self.last, self.proj, self.ctrl = r["last_frames"], proj, ctrl_last
         self.k += 1
         self.timing.append({"chunk": k, "t_world": round(t_end, 3), "export_s": round(t_exp, 1),
                             "wsm_s": round(t_wsm, 1), "cosmos_s": round(r["request_s"], 1),

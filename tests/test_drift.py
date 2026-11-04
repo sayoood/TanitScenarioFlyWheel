@@ -1,7 +1,8 @@
 import cv2
 import numpy as np
 
-from tsf.cosmos.drift import DriftGuard, box_cover, detail, detail_tiles, saturation, sharpness, veil, veil_tiles
+from tsf.cosmos.drift import (DriftGuard, box_cover, detail, detail_tiles, marking_mask, markings, saturation, sharpness,
+                              veil, veil_tiles)
 
 
 def _scene(seed: int = 0) -> np.ndarray:
@@ -133,3 +134,61 @@ def test_after_a_reanchor_the_structure_is_judged_against_the_fresh_frame(tmp_pa
     assert out is not None and st["front"]["detail"] == 1.0
     out, st = g({"front": tmp_path / "other.png"}, tmp_path / "c")
     assert out is not None and st["front"]["sat_ref"] == round(saturation(_scene()), 1)   # colour keeps chunk 0
+
+
+def _control() -> np.ndarray:
+    """A WSM-like control: black, white lane lines and a yellow centre line converging ahead, a filled blue box."""
+    c = np.zeros((480, 832, 3), np.uint8)
+    for x in (60, 300, 560, 800):
+        cv2.line(c, (x, 479), (416, 240), (255, 255, 255), 3)
+    cv2.line(c, (420, 479), (416, 240), (0, 230, 255), 3)
+    cv2.rectangle(c, (600, 280), (760, 380), (240, 160, 60), -1)
+    return c
+
+
+def _road(control: np.ndarray, haze: float = 0.0) -> np.ndarray:
+    """The generated frame for it: asphalt texture with the control's lines painted in; ``haze`` blends toward shading."""
+    rng = np.random.default_rng(3)
+    img = cv2.GaussianBlur(rng.integers(70, 120, (480, 832, 3), dtype=np.uint8), (0, 0), 1.0)
+    img[marking_mask(control, top=0.0, bottom=1.0)] = 225
+    flat = cv2.GaussianBlur(img, (0, 0), 12)
+    return cv2.addWeighted(img, 1 - haze, flat, haze, 0)
+
+
+def test_markings_drop_where_the_control_has_lines_the_frame_no_longer_shows(tmp_path):
+    ctl = _control()
+    m = marking_mask(ctl)
+    assert m.sum() > 800 and not m[:int(0.55 * 480)].any() and not m[280:381, 600:761].any()   # lines only, near band
+    clear, hazy = markings(_road(ctl), m), markings(_road(ctl, 0.75), m)
+    assert clear > 40 and hazy < 0.5 * clear
+    for name, img in (("ref", _road(ctl)), ("hazy", _road(ctl, 0.75)), ("ctl", ctl)):
+        cv2.imwrite(str(tmp_path / f"{name}.png"), img)
+    ctls = {"front": tmp_path / "ctl.png"}
+    g = DriftGuard(min_gap=1, marks_below=0.6, reanchor_below=0.0, veil_below=0.0)
+    g.reference({"front": tmp_path / "ref.png"}, controls=ctls)
+    assert g({"front": tmp_path / "ref.png"}, tmp_path / "c", controls=ctls)[1]["front"]["marks"] == 1.0
+    out, st = g({"front": tmp_path / "hazy.png"}, tmp_path / "c", controls=ctls)
+    assert out is None and st["reanchor"] == ["front"]
+    out, st = g({"front": tmp_path / "hazy.png"}, tmp_path / "c", controls=ctls)    # the re-anchored frame: new ref
+    assert out is not None and st["front"]["marks"] == 1.0
+    assert g({"front": tmp_path / "hazy.png"}, tmp_path / "c")[0] is not None       # no control: not judged
+
+
+def test_the_colour_correction_leaves_a_vehicle_its_colour_given_its_box(tmp_path):
+    """A red car filling a third of a cross camera after a re-anchor came back brown: the chroma of the whole frame
+    was pulled back to chunk 0's."""
+    ref = cv2.GaussianBlur(np.random.default_rng(0).integers(40, 200, (480, 832, 3), dtype=np.uint8), (0, 0), 1.0)
+    car = ref.copy()
+    cv2.rectangle(car, (300, 150), (700, 420), (30, 30, 210), -1)
+    cv2.imwrite(str(tmp_path / "ref.png"), ref)
+    cv2.imwrite(str(tmp_path / "car.png"), car)
+    boxes = {"cross": {"size": [832, 480], "boxes": [[300, 150, 700, 420]]}}
+
+    def red_after(b):
+        g = DriftGuard(reanchor_below=0.0, veil_below=0.0)
+        g.reference({"cross": tmp_path / "ref.png"})
+        out, _ = g({"cross": tmp_path / "car.png"}, tmp_path / ("c" if b else "n"), boxes=b)
+        return cv2.cvtColor(cv2.imread(str(out["cross"])), cv2.COLOR_BGR2LAB)[200:380, 350:650, 1].mean()
+
+    red = cv2.cvtColor(car, cv2.COLOR_BGR2LAB)[200:380, 350:650, 1].mean()
+    assert abs(red_after(boxes) - red) < 6 and red - red_after(None) > 15
