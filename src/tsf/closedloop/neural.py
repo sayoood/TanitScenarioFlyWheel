@@ -117,6 +117,17 @@ def seen_colours(last_frames: dict[str, str], proj: dict | None, min_px: float =
     return {i: word for i, (_, word) in best.items()}
 
 
+def settle_looks(seen: dict[str, str | None], history: dict[str, list], verdicts: dict[str, str | None]) -> None:
+    """Update ``seen`` (each vehicle's look) from a chunk's :func:`seen_colours` ``verdicts``: a look changes between a
+    colour (None) and black, grey or white only when the vehicle's last two verdicts (kept in ``history``) agree. Single
+    verdicts flip: the van, dark for 14 chunks, read as coloured once at 25.1 s and the redraw next drew it blue again,
+    and the yellow bus read black once at 34.7 s."""
+    for i, v in verdicts.items():
+        last = history[i] = (history.get(i, []) + [v])[-2:]
+        if len(last) == 2 and (last[0] is None) == (last[1] is None):
+            seen[i] = v
+
+
 def vehicle_cast(tsir: dict, projs: list[dict | None], cams: list[str], max_depth: float = 120.0,
                  min_px: float = 6.0, min_visible: float = 0.3, looks: dict[str, str] | None = None) -> dict[str, str]:
     """One caption sentence per camera naming the vehicles the map shows in it, nearest first, by the scenario's colour
@@ -226,7 +237,8 @@ class CosmosSensors:
         self.last: dict[str, str] | None = None
         self.ctrl: dict[str, Path] | None = None            # the last chunk's control frames (front cameras) at its end
         self.proj: dict | None = None                       # the sim projected into the last chunk's last frame
-        self.seen: dict[str, str | None] = {}               # each vehicle's latest look (seen_colours), for the cast
+        self.seen: dict[str, str | None] = {}               # each vehicle's look (settle_looks), for the cast
+        self.verdicts: dict[str, list] = {}                 # its last two seen_colours verdicts
         self.k, self.timing = 0, []
 
     def _captions(self, t0: float, signal: str = "", cast: dict | None = None) -> dict:
@@ -370,7 +382,7 @@ class CosmosSensors:
         if self.hood is not None and k == 0:
             self.hood.reference(r["last_frames"])
         self.last, self.proj, self.ctrl = r["last_frames"], proj, ctrl_last
-        self.seen.update(seen_colours(r["last_frames"], proj))
+        settle_looks(self.seen, self.verdicts, seen_colours(r["last_frames"], proj))
         self.k += 1
         self.timing.append({"chunk": k, "t_world": round(t_end, 3), "export_s": round(t_exp, 1),
                             "wsm_s": round(t_wsm, 1), "cosmos_s": round(r["request_s"], 1),

@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from tsf.closedloop.neural import seen_colours, vehicle_cast
+from tsf.closedloop.neural import seen_colours, settle_looks, vehicle_cast
 
 TSIR = {"actors": [{"id": "ego", "role": "ego", "category": "car", "color": "white"},
                    {"id": "lead", "category": "van", "color": "blue"},
@@ -80,3 +80,11 @@ def test_seen_colours_tells_coloured_vehicles_from_black_and_white_ones(tmp_path
     proj["side"] = {"size": SIZE, "objects": [_o("van", [100, 300, 1500, 1000], 3.0)]}
     assert seen_colours({"front": front, "side": side}, proj)["van"] == "black"
     assert seen_colours({"front": front}, None) == {}
+
+
+def test_a_look_changes_only_when_two_verdicts_in_a_row_agree():
+    seen, history, looks = {}, {}, []
+    for v in ["black", None, "black", "dark grey", None, "black", None, None]:
+        settle_looks(seen, history, {"van": v})
+        looks.append(seen.get("van", "-"))
+    assert looks == ["-", "-", "-", "dark grey", "dark grey", "dark grey", "dark grey", None]
