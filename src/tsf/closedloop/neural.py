@@ -83,7 +83,7 @@ def seen_colours(last_frames: dict[str, str], proj: dict | None, min_px: float =
     road and ground outside the boxes) is taken out in proportion to their lightness: the warm cast on the white truck
     read as a colour, and taken out in full it made black cars blue. The chain loses colours as vehicles come close:
     the blue van ahead (30-63 % coloured) was black from 19 s on (2-7 %; the black SUV 0 %, the white truck 1-2 %)
-    and the red car crossing on the left dark grey, so a redraw that named them by the scenario recoloured them; a
+    and the red car crossing on the left dark grey, so captions that named them by the scenario recoloured them; a
     yellow bus seen from the front, its windscreen filling the box, still has 18-50 %."""
     best: dict[str, tuple[float, str | None]] = {}
     for cam, r in (proj or {}).items():
@@ -129,7 +129,7 @@ def vehicle_cast(tsir: dict, projs: list[dict | None], cams: list[str], max_dept
     centre falls in, far away beyond 50 m, close within 10 m (from the projection where it is nearest). A vehicle that
     nearer ones hide is not named: under ``min_visible`` of its box uncovered in every projection. The yellow bus
     behind the van beside the ego was named "on the right, close" for 6 s, and its yellow went onto the truck.
-    ``looks``: colours that replace the scenario's (a redraw names vehicles as the chain shows them)."""
+    ``looks``: colours that replace the scenario's (vehicles named as the chain shows them)."""
     if not any(projs):
         return {}
     looks = looks or {}
@@ -226,7 +226,7 @@ class CosmosSensors:
         self.last: dict[str, str] | None = None
         self.ctrl: dict[str, Path] | None = None            # the last chunk's control frames (front cameras) at its end
         self.proj: dict | None = None                       # the sim projected into the last chunk's last frame
-        self.seen: dict[str, str | None] = {}               # each vehicle's latest look (seen_colours), for redraws
+        self.seen: dict[str, str | None] = {}               # each vehicle's latest look (seen_colours), for the cast
         self.k, self.timing = 0, []
 
     def _captions(self, t0: float, signal: str = "", cast: dict | None = None) -> dict:
@@ -342,9 +342,10 @@ class CosmosSensors:
             if self.guard is not None and first:                     # None: re-anchor on the controls
                 first, drift = self.guard(first, self.out / "gen" / cid / "cond", boxes=_boxes(self.proj),
                                           controls=self.ctrl)
-            if first is None:                           # a redraw keeps the looks the chain lost a colour to
-                colour = {a["id"]: a.get("color") for a in self.tsir["actors"]}
-                looks = {i: c for i, c in self.seen.items() if c and colour.get(i) not in ACHROMATIC}
+            # the vehicles the chain lost a colour to are named as it shows them: a redraw named by the scenario
+            # recoloured the van (720i), and chunks that kept naming it blue pulled the black van back to navy (720j)
+            colour = {a["id"]: a.get("color") for a in self.tsir["actors"]}
+            looks = {i: c for i, c in self.seen.items() if c and colour.get(i) not in ACHROMATIC}
             cast = vehicle_cast(self.tsir, [self.proj, proj], self.cams, looks=looks)
 
             def gen(out_dir: Path, seed_offset: int = 0) -> dict:
@@ -361,6 +362,9 @@ class CosmosSensors:
         else:
             proj = self._project(cid)                                # resumed: the chunk's export is still on disk
             ctrl_last = {c: p for c in FRONT_CAMS if (p := self.out / "wsm" / cid / f"last_{c}.png").exists()}
+            if self.guard is not None and self.last:        # the guard's re-anchors and references as if generated
+                drift = self.guard(self.last, self.out / "gen" / cid / "cond", boxes=_boxes(self.proj),
+                                   controls=self.ctrl)[1]
         if self.guard is not None and k == 0:
             self.guard.reference(r["last_frames"], _boxes(proj), ctrl_last)
         if self.hood is not None and k == 0:
