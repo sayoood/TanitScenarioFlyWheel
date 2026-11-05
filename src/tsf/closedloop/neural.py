@@ -33,6 +33,7 @@ FRONT_CAMS = ("camera_front_wide_120fov", "camera_front_tele_30fov")      # the 
 NUMBER = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine"}
 CHUNK = 17                                           # frames per Sim-Auto request (1 conditioning + 16 new)
 FPS = 30
+ACHROMATIC = ("black", "dark grey", "grey", "silver", "white")
 
 
 def signal_caption(sim: TanitSim, t0: float, t1: float, max_dist: float = 90.0) -> str:
@@ -73,8 +74,51 @@ def _visible(objects: list[dict], size, scale: int = 4) -> dict[str, float]:
     return out
 
 
+def seen_colours(last_frames: dict[str, str], proj: dict | None, min_px: float = 64.0,
+                 min_visible: float = 0.8) -> dict[str, str | None]:
+    """How each vehicle looks in a chunk's last frames, from the camera where its box is widest (at least ``min_px``
+    generated pixels, ``min_visible`` of it uncovered, inside the frame): None where it shows a colour, else 'black',
+    'dark grey', 'grey' or 'white' by the median lightness of the box's inner part. A colour shows where at least 12 %
+    of those pixels are lit (L over 30 of 255) and more than 12 off grey in a/b, once the frame's colour cast (the
+    road and ground outside the boxes) is taken out in proportion to their lightness: the warm cast on the white truck
+    read as a colour, and taken out in full it made black cars blue. The chain loses colours as vehicles come close:
+    the blue van ahead (30-63 % coloured) was black from 19 s on (2-7 %; the black SUV 0 %, the white truck 1-2 %)
+    and the red car crossing on the left dark grey, so a redraw that named them by the scenario recoloured them; a
+    yellow bus seen from the front, its windscreen filling the box, still has 18-50 %."""
+    best: dict[str, tuple[float, str | None]] = {}
+    for cam, r in (proj or {}).items():
+        img = cv2.imread(str(last_frames[cam])) if cam in last_frames else None
+        if img is None:
+            continue
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
+        (h, w_img), (sx, sy) = img.shape[:2], (img.shape[1] / r["size"][0], img.shape[0] / r["size"][1])
+        free = np.zeros((h, w_img), bool)
+        free[h // 2:] = True
+        for o in r["objects"]:
+            u0, v0, u1, v1 = o["box"]
+            free[max(int(v0 * sy), 0):max(int(v1 * sy), 0), max(int(u0 * sx), 0):max(int(u1 * sx), 0)] = False
+        ground = lab[free] if free.mean() > 0.05 else lab[h // 2:].reshape(-1, 3)
+        light, cast = max(float(np.median(ground[:, 0])), 1.0), np.median(ground[:, 1:], 0) - 128
+        uncovered = _visible(r["objects"], r["size"])
+        for o in r["objects"]:
+            u0, v0, u1, v1 = o["box"]
+            w = (u1 - u0) * sx
+            if (uncovered[o["id"]] < min_visible or w < min_px or w <= best.get(o["id"], (0.0,))[0]
+                    or min(u0, v0) < 0 or u1 > r["size"][0] or v1 > r["size"][1]):
+                continue
+            du, dv = (u1 - u0) / 5, (v1 - v0) / 5
+            px = lab[int((v0 + dv) * sy):int((v1 - dv) * sy), int((u0 + du) * sx):int((u1 - du) * sx)].reshape(-1, 3)
+            ab = px[:, 1:] - 128 - cast * (px[:, :1] / light)
+            if ((px[:, 0] > 30) & (np.hypot(*ab.T) > 12)).mean() >= 0.12:
+                best[o["id"]] = (w, None)
+                continue
+            lum = float(np.median(px[:, 0])) * 100 / 255
+            best[o["id"]] = (w, "black" if lum < 20 else "dark grey" if lum < 40 else "grey" if lum < 60 else "white")
+    return {i: word for i, (_, word) in best.items()}
+
+
 def vehicle_cast(tsir: dict, projs: list[dict | None], cams: list[str], max_depth: float = 120.0,
-                 min_px: float = 6.0, min_visible: float = 0.3) -> dict[str, str]:
+                 min_px: float = 6.0, min_visible: float = 0.3, looks: dict[str, str] | None = None) -> dict[str, str]:
     """One caption sentence per camera naming the vehicles the map shows in it, nearest first, by the scenario's colour
     and category. ``projs``: :func:`tsf.cosmos.adherence.project_clip` of the frames the chunk spans (its conditioning
     frame and its last frame); no projection, no sentences. The drive-long captions named road users per direction from
@@ -84,10 +128,13 @@ def vehicle_cast(tsir: dict, projs: list[dict | None], cams: list[str], max_dept
     truck yellow), so each vehicle gets its own sentence with where it is in the view: the third of the width its box
     centre falls in, far away beyond 50 m, close within 10 m (from the projection where it is nearest). A vehicle that
     nearer ones hide is not named: under ``min_visible`` of its box uncovered in every projection. The yellow bus
-    behind the van beside the ego was named "on the right, close" for 6 s, and its yellow went onto the truck."""
+    behind the van beside the ego was named "on the right, close" for 6 s, and its yellow went onto the truck.
+    ``looks``: colours that replace the scenario's (a redraw names vehicles as the chain shows them)."""
     if not any(projs):
         return {}
-    look = {a["id"]: _vehicle_name(a) for a in tsir["actors"] if a.get("role") != "ego"}
+    looks = looks or {}
+    look = {a["id"]: _vehicle_name({**a, "color": looks.get(a["id"], a.get("color"))})
+            for a in tsir["actors"] if a.get("role") != "ego"}
     out = {}
     for cam in cams:
         near: dict[str, tuple[float, float]] = {}       # id -> (depth, box centre as a share of the width)
@@ -179,6 +226,7 @@ class CosmosSensors:
         self.last: dict[str, str] | None = None
         self.ctrl: dict[str, Path] | None = None            # the last chunk's control frames (front cameras) at its end
         self.proj: dict | None = None                       # the sim projected into the last chunk's last frame
+        self.seen: dict[str, str | None] = {}               # each vehicle's latest look (seen_colours), for redraws
         self.k, self.timing = 0, []
 
     def _captions(self, t0: float, signal: str = "", cast: dict | None = None) -> dict:
@@ -271,7 +319,7 @@ class CosmosSensors:
         t0 = t_end - (self.chunk - 1) / FPS
         tic = time.perf_counter()
         t_exp = t_wsm = 0.0
-        drift = judged = hooded = None
+        drift = judged = hooded = looks = None
         signal = signal_caption(sim, t0, t_end) if self.span else ""
         r = None if self.dry else self._cached(cid)
         if r is None:
@@ -294,7 +342,10 @@ class CosmosSensors:
             if self.guard is not None and first:                     # None: re-anchor on the controls
                 first, drift = self.guard(first, self.out / "gen" / cid / "cond", boxes=_boxes(self.proj),
                                           controls=self.ctrl)
-            cast = vehicle_cast(self.tsir, [self.proj, proj], self.cams)
+            if first is None:                           # a redraw keeps the looks the chain lost a colour to
+                colour = {a["id"]: a.get("color") for a in self.tsir["actors"]}
+                looks = {i: c for i, c in self.seen.items() if c and colour.get(i) not in ACHROMATIC}
+            cast = vehicle_cast(self.tsir, [self.proj, proj], self.cams, looks=looks)
 
             def gen(out_dir: Path, seed_offset: int = 0) -> dict:
                 return generate.sim_chunk(self.out / "wsm" / cid, out_dir, self.cams, frames=self.chunk, res=self.res,
@@ -315,11 +366,13 @@ class CosmosSensors:
         if self.hood is not None and k == 0:
             self.hood.reference(r["last_frames"])
         self.last, self.proj, self.ctrl = r["last_frames"], proj, ctrl_last
+        self.seen.update(seen_colours(r["last_frames"], proj))
         self.k += 1
         self.timing.append({"chunk": k, "t_world": round(t_end, 3), "export_s": round(t_exp, 1),
                             "wsm_s": round(t_wsm, 1), "cosmos_s": round(r["request_s"], 1),
                             **({"signal": signal} if signal else {}), **({"drift": drift} if drift else {}),
-                            **({"judge": judged} if judged else {}), **({"hood": hooded} if hooded else {})})
+                            **({"judge": judged} if judged else {}), **({"hood": hooded} if hooded else {}),
+                            **({"looks": looks} if looks else {})})
         # Sim-Auto's 480p preset (832x480) is a non-uniform rescale of the 16:9 control geometry: undo it for the rig
         return {c: cv2.resize(cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB), (1280, 720), interpolation=cv2.INTER_CUBIC)
                 for c, p in self.last.items()}
