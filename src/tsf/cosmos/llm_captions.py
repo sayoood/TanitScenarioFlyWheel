@@ -54,6 +54,9 @@ RULES = {
     "traffic guess": re.compile(r"\b(intersection|junction|road|lanes?|street)s?\b[^.]{0,25}\b(is|are|remains?|"
                                 r"becomes?)\s+(now\s+)?(clear|empty|free)\b|\bno (other )?(traffic|vehicles|cars)\b|"
                                 r"\b(have|has) (passed|cleared|left)\b|\bno longer (visible|ahead|there)\b", re.I),
+    # 720m's setting said "No road works, cones, or barriers are present." in every block: what a caption names, the
+    # generator paints
+    "absence": re.compile(r"^(no|there (is|are) no)\b|\b(no|without)\b[^.]{0,40}\b(is|are) (present|visible)\b", re.I),
 }
 # ... and, for a caller that describes the junction per chunk from the sim (``junction=False``), the junction itself:
 # one caption for the whole drive put 'the intersection directly in front, traffic-light poles at its edges, 140 m

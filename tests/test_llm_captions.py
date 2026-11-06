@@ -8,6 +8,7 @@ BAD = {
     "light mounting": "Traffic lights are mounted on overhead gantries at the intersection ahead.",
     "road marking": "A white turn arrow is painted on the lane.",
     "traffic guess": "The red car and white truck have passed through the intersection.",
+    "absence": "No road works, cones, or barriers are present.",
 }
 GOOD = ["A red car and a white truck approach from the opposite direction.", "The sun is high overhead.",
         "Brightly painted shopfronts line the road.", "Traffic lights stand on poles at the junction.",
