@@ -605,7 +605,8 @@ def sim_rollout(wsm_dir, out_dir, cameras=None, chunks: int = 3, chunk_frames: i
 WINDOW_FRAMES = 49          # longest 3-view joint request on Thor next to tsf-llm (coordinator cap). Measured: the working set beyond the idle
                             # server is ~13-18 GB for 25 AND 49 frames (it does not shrink with shorter windows), 97 frames overran 24 GB
                             # (MemAvailable 0, tsf-llm OOM-killed), so use the longest allowed window: fewer seams, same peak
-_CAP_BLOCK = re.compile(r"(?m)^\[([0-9.]+)s-([0-9.]+)s\]:[ \t]*")
+_CAP_BLOCK = re.compile(r"\[([0-9.]+)s-([0-9.]+)s\]:[ \t]*")    # anywhere: llm_captions joins its blocks on one line,
+                                                                  # and line-start only gave every T1 chunk all 40 s (720l)
 
 
 def window_caption(text: str, t_a: float, t_b: float, min_len: float = 0.15) -> str:

@@ -145,6 +145,8 @@ class RefePolicy:
     max_consec_fallback: int = 20
     replan_every_s: float = 0.5                      # TanitSim calls the policy every tick (0.05 s); the model plans at 2 Hz and the
                                                      # plan is re-expressed in the moving ego frame in between (0 = every call)
+    replan_on_frames: bool = False                   # plan once per set_frames() instead (T1: a chunk every 0.533 s; on the 0.5 s
+                                                     # clock the images were up to 0.52 s older than the ego state, 720l)
     name: str = "refe_sft4"
     last: dict = field(default_factory=dict, init=False)
     calls: list = field(default_factory=list, init=False, repr=False)   # per model call: t, v, d, goal, k, plan_end
@@ -154,6 +156,7 @@ class RefePolicy:
     _client: RefeClient | None = field(default=None, init=False, repr=False)
     _latest: dict | None = field(default=None, init=False, repr=False)
     _plan: dict | None = field(default=None, init=False, repr=False)
+    _fresh: bool = field(default=False, init=False, repr=False)       # set_frames() handed frames no plan has used
 
     # -- frames -------------------------------------------------------------------------------------------------
     @property
@@ -165,6 +168,7 @@ class RefePolicy:
     def set_frames(self, frames: dict) -> None:
         """Hand the policy the frames of the current tick (the sensor stage calls this before each ``sim.step``)."""
         self._latest = frames
+        self._fresh = True
 
     def model_images(self, frames: dict) -> np.ndarray:
         """Hyperion f-theta frames or NAVSIM frames -> ``[4, 512, 960, 3]`` uint8 RGB in the REFe camera order."""
@@ -187,7 +191,9 @@ class RefePolicy:
     def needs_frames(self, sim) -> bool:
         """True when the next call will run the model (a sensor stage need only render frames on those ticks)."""
         now = getattr(sim, "t", None)
-        return not (self._plan is not None and now is not None and 0.0 <= now - self._plan["t"] < self.replan_every_s - 1e-9)
+        if self._plan is None or now is None or now < self._plan["t"]:
+            return True
+        return self._fresh if self.replan_on_frames else now - self._plan["t"] >= self.replan_every_s - 1e-9
 
     def __call__(self, sim, ego, frames: dict | None = None) -> dict:
         if not self.needs_frames(sim):
@@ -195,7 +201,7 @@ class RefePolicy:
         frames = frames if frames is not None else (self.frame_source(sim, ego) if self.frame_source else self._latest)
         if not frames:
             return self._no_frames(ego)
-        self._consec = 0
+        self._consec, self._fresh = 0, False
         t0 = time.perf_counter()
         img = self.model_images(frames)
         t_adapt = (time.perf_counter() - t0) * 1e3

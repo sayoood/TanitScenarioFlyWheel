@@ -75,7 +75,8 @@ SIGN_CLASS = {
 
 # traffic-light head geometry (the xodr compiler places 0.9 m x 0.35 m heads with their bottom edge 2.5 m up)
 TL_BOTTOM, TL_HEIGHT, TL_WIDTH, TL_DEPTH = 2.5, 0.9, 0.35, 0.50   # depth: see-through of the renderer glyph bias beyond ~33 m
-FAR_SIDE_MARGIN, FAR_SIDE_SEARCH = 2.0, 80.0     # far-side repeater: m beyond the junction's far edge; junction lanes considered
+FAR_SIDE_MARGIN, FAR_SIDE_SEARCH = 2.0, 80.0     # far-side mast arm: m beyond the junction's far edge; junction lanes considered
+MAST_ARM_Z, MAST_HEAD_BOTTOM = 6.4, 5.3          # arm height and the bottom of the heads hanging from it (US: >= 4.6 m clear)
 SIGN_SIZE, SIGN_CENTER_Z, SIGN_DEPTH = 0.75, 2.2, 0.10
 
 
@@ -276,10 +277,10 @@ class MapLayers:
     """
 
     def __init__(self, sim, log, wf: WorldFrame, ego_xy: np.ndarray, radius: float = 300.0,
-                 left_arrow_heads: bool = False, far_side_heads: bool = True):
+                 left_arrow_heads: bool = False, mast_arms: bool = True):
         self.sim, self.m, self.log, self.wf, self.R = sim, sim.m, log, wf, radius
         self.tree = cKDTree(ego_xy[:: max(1, len(ego_xy) // 300)])
-        self.left_arrow_heads, self.far_side_heads = left_arrow_heads, far_side_heads
+        self.left_arrow_heads, self.mast_arms = left_arrow_heads, mast_arms
         self.layers: dict[str, list] = {k: [] for k in (
             "3d_lanelines", "3d_road_boundaries", "3d_crosswalks", "3d_wait_lines", "3d_poles",
             "3d_traffic_signs", "3d_road_markings", "3d_traffic_lights")}
@@ -510,6 +511,15 @@ class MapLayers:
                     best = (int(rid), d)
         return best[0]
 
+    def _inbound_offsets(self, arm: int, pos: np.ndarray, toward_lane: np.ndarray) -> list[float]:
+        """Lateral offsets (towards the road centre) of the arm's inbound lanes at their stop line from ``pos``, kerb first."""
+        out = []
+        for (rid, _, _), ln in self.m.lanes.items():
+            if (rid.isdigit() and int(rid) == arm and ln.junction == "-1" and ln.successors
+                    and self.m.lanes[ln.successors[0]].junction != "-1" and np.hypot(*(ln.xy[-1] - pos)) < 20.0):
+                out.append(float((ln.xy[-1] - pos) @ toward_lane))
+        return sorted(out)
+
     def _signals(self):
         jxy = [ln.xy for ln in self.m.lanes.values() if ln.junction != "-1"]
         jxy = np.concatenate(jxy) if jxy else np.zeros((0, 2))
@@ -524,27 +534,46 @@ class MapLayers:
             n = np.array([math.cos(normal), math.sin(normal)])
             toward_lane = np.array([math.sin(normal), -math.cos(normal)])      # lateral, towards the road centre
             # The OpenDRIVE head stands at the stop line on the near kerb: a vehicle at the line has it beside or
-            # behind its front camera (the T1 ego entered on red with no signal in view for its last 1.5 s). A far-side
-            # repeater on the same kerb line, just beyond the junction and facing the same traffic, stays in view.
-            sites = [("", pos)]
-            if self.far_side_heads and len(jxy):
+            # behind its front camera (the T1 ego entered on red with no signal in view for its last 1.5 s), and its
+            # left-arrow head 0.5 m beside it read as one pole lit green and red at once (720l). The heads hang from a
+            # mast arm beyond the junction instead, one above each inbound lane and the left-arrow head above the
+            # leftmost (US practice, the driving data Cosmos and REFe learnt from); the kerb head stays where the
+            # junction has no geometry to put the arm on.
+            far, lat = None, []
+            if self.mast_arms and len(jxy):
                 ahead = (jxy - pos) @ -n
                 close = np.hypot(*(jxy - pos).T) < FAR_SIDE_SEARCH
-                if close.any() and ahead[close].max() > 5.0:
-                    sites.append(("_far", pos - n * (ahead[close].max() + FAR_SIDE_MARGIN)))
-            for tag, site in sites:
-                specs = [("main", site)]
-                if self.left_arrow_heads:
-                    specs.append(("left", site + toward_lane * (TL_WIDTH + 0.15)))
-                for kind, p in specs:
-                    fid = f"tl_{sg.id}{tag}" + ("_left" if kind == "left" else "")
-                    cub = _cuboid([*self.wf.xy(p), TL_BOTTOM + TL_HEIGHT / 2], float(self.wf.yaw(normal)),
-                                  (TL_DEPTH, TL_WIDTH, TL_HEIGHT))
-                    self.heads.append({"feature_id": fid, "arm": arm, "kind": kind, "signal_id": sg.id,
-                                       "far_side": bool(tag), "pos_sim": [round(float(p[0]), 3), round(float(p[1]), 3)],
-                                       "index": len(self.layers["3d_traffic_lights"])})
-                    self.layers["3d_traffic_lights"].append(_lbl("cuboid3d", cub, [_text("feature_id", fid)]))
-                self._pole(site, TL_BOTTOM + TL_HEIGHT + 0.15, behind=normal, back=TL_DEPTH / 2 + 0.1)   # pole behind the head
+                lat = self._inbound_offsets(arm, pos, toward_lane)
+                if close.any() and ahead[close].max() > 5.0 and lat:
+                    far = pos - n * (ahead[close].max() + FAR_SIDE_MARGIN)
+            if far is None:
+                specs = [("main", pos, "")] + ([("left", pos + toward_lane * (TL_WIDTH + 0.15), "_left")]
+                                               if self.left_arrow_heads else [])
+                self._heads(sg, arm, normal, specs, TL_BOTTOM, far_side=False)
+                self._pole(pos, TL_BOTTOM + TL_HEIGHT + 0.15, behind=normal, back=TL_DEPTH / 2 + 0.1)   # behind the head
+                continue
+            kinds = ["main"] * len(lat)
+            if self.left_arrow_heads and len(lat) == 1:          # one lane: the arrow head beside the main one
+                lat, kinds = [lat[0] - 0.6, lat[0] + 0.6], ["main", "left"]
+            elif self.left_arrow_heads:
+                kinds[-1] = "left"
+            specs = [(k, far + toward_lane * d, f"_m{len(lat) - i}" + ("_left" if k == "left" else ""))
+                     for i, (k, d) in enumerate(zip(kinds, lat))]                  # _m1 = above the leftmost lane
+            self._heads(sg, arm, normal, specs, MAST_HEAD_BOTTOM, far_side=True)
+            self._pole(far, MAST_ARM_Z, behind=normal, back=0.0)                     # the upright at the far kerb
+            tip = self.wf.xy(far + toward_lane * (max(lat) + 0.8))
+            root = self.wf.xy(far)
+            self.layers["3d_poles"].append(_lbl("polyline3d", [[root[0], root[1], MAST_ARM_Z], [tip[0], tip[1], MAST_ARM_Z]]))
+
+    def _heads(self, sg, arm: int, normal: float, specs: list, bottom: float, far_side: bool):
+        """Head cuboids ``(kind, position, feature-id suffix)`` with their bottom edge ``bottom`` m up, facing ``normal``."""
+        for kind, p, tag in specs:
+            fid = f"tl_{sg.id}{tag}"
+            cub = _cuboid([*self.wf.xy(p), bottom + TL_HEIGHT / 2], float(self.wf.yaw(normal)), (TL_DEPTH, TL_WIDTH, TL_HEIGHT))
+            self.heads.append({"feature_id": fid, "arm": arm, "kind": kind, "signal_id": sg.id, "far_side": far_side,
+                               "pos_sim": [round(float(p[0]), 3), round(float(p[1]), 3)],
+                               "index": len(self.layers["3d_traffic_lights"])})
+            self.layers["3d_traffic_lights"].append(_lbl("cuboid3d", cub, [_text("feature_id", fid)]))
 
 
 # ============================================================================== traffic-light states
@@ -589,7 +618,7 @@ def _tl_states(sim, log, heads: list[dict], tt: np.ndarray) -> tuple[dict, dict]
 # ============================================================================== export
 def export_clip(sim, log, out_root, clip_id: str, t0: float | None = None, duration: float = CHUNK_SECONDS,
                 fps: int = OUT_FPS, rig="hyperion", *, cameras=None, max_obj_range: float = 250.0,
-                map_radius: float = 300.0, left_arrow_heads: bool | None = None, far_side_heads: bool = True,
+                map_radius: float = 300.0, left_arrow_heads: bool | None = None, mast_arms: bool = True,
                 overwrite: bool = False,
                 require_planar_polygons: bool = True, pad_frames: int = 0, write_vehicle_pose: bool = True) -> Path:
     """Write one RDS-HQ clip (30 Hz, ``duration`` s, Hyperion rig) from a TanitSim run and validate it.
@@ -676,7 +705,7 @@ def export_clip(sim, log, out_root, clip_id: str, t0: float | None = None, durat
     # ---- map + traffic lights
     protected = bool(getattr(getattr(sim, "signals", None), "enabled", False) and getattr(sim.signals, "protected", False))
     lam = protected if left_arrow_heads is None else left_arrow_heads
-    ml = MapLayers(sim, log, wf, np.stack([ex, ey], 1), map_radius, left_arrow_heads=bool(lam), far_side_heads=far_side_heads)
+    ml = MapLayers(sim, log, wf, np.stack([ex, ey], 1), map_radius, left_arrow_heads=bool(lam), mast_arms=mast_arms)
     layers = {k: {"labels": v} for k, v in ml.layers.items()}
     states, sig_info = _tl_states(sim, log, ml.heads, tt)
     tl = {"state_to_legacy_render_state": {}, "traffic_light_states": {}}

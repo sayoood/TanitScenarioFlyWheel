@@ -88,3 +88,35 @@ def test_a_look_changes_only_when_two_verdicts_in_a_row_agree():
         settle_looks(seen, history, {"van": v})
         looks.append(seen.get("van", "-"))
     assert looks == ["-", "-", "-", "dark grey", "dark grey", "dark grey", "dark grey", None]
+
+
+def test_the_junction_sentence_gives_the_distance_and_the_light_above_each_lane(tmp_path):
+    """Nothing beyond 90 m from the stop line (the drive-long caption's 'intersection directly in front, 140 m away'
+    drew signal poles beside the road, 720l); then the distance, and each lane's light on the mast arm with its colour:
+    the left lane's shows the protected left (red, green from 10.1 s), the right lane's the straight-ahead state."""
+    import json
+    import re
+    from pathlib import Path
+
+    from tsf.closedloop.neural import junction_caption
+    from tsf.compile import xodr
+    from tsf.ir.scenario import Scenario
+    from tsf.sim import odr
+    from tsf.sim.engine import TanitSim
+    sc = Scenario.model_validate(json.loads((Path(__file__).resolve().parents[1] /
+                                             "examples/uc1_protected_left_turn.json").read_text()))
+    xodr.write(sc, tmp_path / "x.xodr")
+    sim = TanitSim(sc, odr.load(tmp_path / "x.xodr"))
+    assert junction_caption(sim, 0.0, 0.5) == ""
+    said = {}
+    while sim.t < 12.0:
+        sim.step()
+        txt = junction_caption(sim, sim.t, sim.t + 0.5)
+        if txt and not said:
+            said["first"] = txt
+        if txt and sim.t > 11.0:
+            said["green"] = txt
+    assert re.fullmatch(r"A junction is about (85|90) metres ahead\. Beyond it, a mast arm holds one traffic light above "
+                        r"each lane: the one above the left lane is red and the one above the right lane is red\.",
+                        said["first"])
+    assert said["green"].endswith("the one above the left lane is green and the one above the right lane is red.")

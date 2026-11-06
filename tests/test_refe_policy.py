@@ -170,3 +170,14 @@ def test_replanning_cadence_and_plan_reuse():
     for t in (0.0, 0.05, 0.1):
         pol0(SimpleNamespace(t=t), _ego(), fr)
     assert len(pol0._client.calls) == 3
+
+
+def test_replan_on_frames_plans_once_per_handed_frame_set():
+    """T1 hands frames every 0.533 s: the model runs on each set, with the ego state of the tick they show."""
+    pol = _policy(replan_on_frames=True)
+    ticks = np.round(np.arange(0.0, 1.6, 0.05), 2)
+    for t in ticks:
+        if t in (0.0, 0.55, 1.1):
+            pol.set_frames(_navsim_frames())
+        pol(SimpleNamespace(t=float(t)), _ego(x=10.0 * t, p=10.0 * t))
+    assert [c["t"] for c in pol.calls] == [0.0, 0.55, 1.1]

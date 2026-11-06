@@ -367,6 +367,9 @@ def test_window_caption_cuts_shifts_and_absorbs_slivers():
     assert g.window_caption(cap, 48 / 30, 97 / 30) == "[0.00s-0.60s]: B two.\n\n[0.60s-1.63s]: C three."
     assert g.window_caption("[0s-1s]: A\n\n[1s-1.1s]: B\n\n[1.1s-3s]: C", 0, 3) == "[0.00s-1.00s]: A\n\n[1.00s-3.00s]: C"
     assert g.window_caption("no time blocks here", 1, 2) == "no time blocks here"
+    # llm_captions joins its blocks with a space: a T1 chunk at 14 s gets the second block alone
+    inline = "[0.0s-13.3s]: Setting. Ahead one. [13.3s-26.7s]: Setting. Ahead two. [26.7s-40.0s]: Setting. Ahead three."
+    assert g.window_caption(inline, 14.0, 14.0 + 17 / 30) == "[0.00s-0.57s]: Setting. Ahead two."
 
 
 def test_sim_windows_chains_conditions_and_joins(tmp_path, monkeypatch):

@@ -6,7 +6,7 @@ Sim-time-decoupled loop (the world waits while the sensors are generated):
       1. export the last 17 frames of the *closed-loop* world (ego as driven by the policy) to RDS-HQ
       2. WSM v4 renders the control videos of the cameras the policy needs
       3. Sim-Auto generates the chunk, conditioned on the previous chunk's last frames (I2V chaining),
-         captions: the chunk's span of one drive-long caption plus, for the front cameras, the ego's signal state
+         captions: the chunk's span of one drive-long caption plus, for the front cameras, the junction ahead and its lights
       4. the newest generated frames (resized back to the 16:9 rig resolution) go to the policy
     the first chunk has no frames yet: the policy's const_vel fallback drives the first 0.53 s.
 
@@ -36,25 +36,41 @@ FPS = 30
 ACHROMATIC = ("black", "dark grey", "grey", "silver", "white")
 
 
-def signal_caption(sim: TanitSim, t0: float, t1: float, max_dist: float = 90.0) -> str:
-    """The ego approach's signal state over ``[t0, t1]`` (sim time) as one caption sentence, while the ego is within
-    ``max_dist`` m of its stop line ('' otherwise). The LLM captions leave signal colours out: written once before the
-    drive, they guessed them from the plan and contradicted it (a green left-turn signal while the map showed red)."""
-    plan = getattr(sim, "signals", None)
+def junction_caption(sim: TanitSim, t0: float, t1: float, max_dist: float = 90.0) -> str:
+    """The junction ahead of the ego over ``[t0, t1]`` (sim time) as caption sentences, while the ego is within
+    ``max_dist`` m of its stop line ('' otherwise): how far it is and, at a signalised one, the lights on the mast arm
+    beyond it (:meth:`tsf.cosmos.rds_hq.MapLayers._signals`: one above each inbound lane, the left lane's showing the
+    left-turn state under a protected left) with their colours. The drive-long captions leave the junction out: written
+    once before the drive, they guessed signal colours from the plan (a green left-turn signal while the map showed red),
+    and their 'intersection directly in front, traffic-light poles at its edges, 140 m away' in every chunk drew signal
+    poles beside the road 90 m before it (720l)."""
     ego = next(a for a in sim.agents.values() if a.role == "ego")
-    if plan is None or not plan.enabled or ego.path is None:
+    if ego.path is None:
         return ""
     nj, arm = sim._next_junction_lane(ego), sim._arm_of(ego)
-    if nj is None or arm is None or ego.path.starts[nj[0]] - ego.p > max_dist:
+    if nj is None or arm is None or (d := ego.path.starts[nj[0]] - ego.p) > max_dist:
         return ""
+    out = f"A junction is about {max(5, 5 * round(d / 5))} metres ahead."
+    plan = getattr(sim, "signals", None)
+    if plan is None or not plan.enabled:
+        return out
+    lanes = sim.sc.road.approaches[arm].inbound
+    n = lanes.driving_lanes + lanes.left_turn_lane + lanes.right_turn_lane
 
-    def say(what: str, turn: str) -> str:
+    def say(what: str, turn: str, many: bool = False) -> str:
         a, b = plan.state(arm, turn, t0), plan.state(arm, turn, t1)
-        return f"{what} is {a}" if a == b else f"{what} turns from {a} to {b}"
+        return f"{what} {'are' if many else 'is'} {a}" if a == b else f"{what} turn{'' if many else 's'} from {a} to {b}"
+    if plan.protected and n == 1:
+        return (f"{out} Beyond it, a mast arm holds two traffic lights above the lane: {say('the left one', 'left')} "
+                f"and {say('the right one', 'straight')}.")
     if plan.protected:
-        return (f"At the junction ahead, {say('the light for straight-ahead traffic', 'straight')} and "
-                f"{say('the left-turn signal', 'left')}.")
-    return f"At the junction ahead, {say('the traffic light', 'straight')}."
+        rest = say("the one above the right lane", "straight") if n == 2 else \
+            say("those above the other lanes", "straight", many=True)
+        return (f"{out} Beyond it, a mast arm holds one traffic light above each lane: "
+                f"{say('the one above the left lane', 'left')} and {rest}.")
+    if n == 1:
+        return f"{out} Beyond it, {say('the traffic light on a mast arm above the lane', 'straight')}."
+    return f"{out} Beyond it, a mast arm holds one traffic light above each lane, and {say('they', 'straight', many=True)}."
 
 
 def _vehicle_name(a: dict) -> str:
@@ -225,7 +241,9 @@ class CosmosSensors:
         elif not captions and not dry:
             self.span, lint = duration, {}
             captions = llm_captions(tsir, cams, frames=int(round(duration * FPS)) + 1 if duration else chunk, fps=FPS,
-                                    road_users=False, report=lint)       # vehicles: vehicle_cast per chunk
+                                    road_users=False, junction=False, repeat_setting=True, report=lint)
+            # vehicles: vehicle_cast per chunk; the junction: junction_caption; the setting in every time block, since
+            # each chunk gets its block alone and a redraw draws the world from it
             (out / "captions_lint.json").write_text(json.dumps(lint, indent=1))
         self.caps = captions or {}
         (out / "gen").mkdir(parents=True, exist_ok=True)
@@ -243,7 +261,7 @@ class CosmosSensors:
 
     def _captions(self, t0: float, signal: str = "", cast: dict | None = None) -> dict:
         """The chunk's span of the drive-long captions plus each camera's ``cast`` (:func:`vehicle_cast`); ``signal``
-        (:func:`signal_caption`) is appended for the front cameras only, since a caption that names a signal makes the
+        (:func:`junction_caption`) is appended for the front cameras only, since a caption that names a signal makes the
         generator paint one wherever it looks."""
         from tsf.cosmos.generate import window_caption
         cast = cast or {}
@@ -332,7 +350,7 @@ class CosmosSensors:
         tic = time.perf_counter()
         t_exp = t_wsm = 0.0
         drift = judged = hooded = looks = None
-        signal = signal_caption(sim, t0, t_end) if self.span else ""
+        signal = junction_caption(sim, t0, t_end) if self.span else ""
         r = None if self.dry else self._cached(cid)
         if r is None:
             root = rds_hq.export_clip(sim, log, self.out / "rds", cid, t0=t0, duration=self.chunk / FPS,
@@ -468,7 +486,7 @@ def main():
         ap.error("--chunk must be 4k+1")
     tsir = json.loads(Path(a.scenario).read_text())
     out = Path(a.out)
-    pol = None if a.scripted else RefePolicy(fallback="const_vel")
+    pol = None if a.scripted else RefePolicy(fallback="const_vel", replan_on_frames=True)
     r = run_t1(tsir, pol, out, a.seconds, a.cams.split(","), a.res, dry=a.dry, resume=a.resume, guard=not a.no_drift_guard,
                chunk=a.chunk, judge=a.judge)
     if a.no_video:
